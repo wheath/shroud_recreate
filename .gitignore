@@ -1,0 +1,31 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+
+# ---- OS ----
+.DS_Store
+._*
+
+# ---- Imagery & data policy ----
+# Keep third-party Shroud photographs and large datasets OUT of the repo.
+# Renders are outputs of the code, not source — regenerate them locally.
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.pdf
+*.npy
+*.obj
+*.ply

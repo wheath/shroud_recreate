@@ -1,0 +1,24 @@
+[project]
+name = "shroud-core"
+version = "0.1.0"
+description = "Procedural Shroud-of-Turin image-formation engine (NumPy/SciPy, cv2-free)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "William Heath" }]
+dependencies = ["numpy", "scipy"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+# MediaPipe is only needed for photo -> face-geometry (desktop); kept optional.
+geometry = ["mediapipe", "matplotlib"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["shroud_core"]
+
+[tool.ruff]
+line-length = 100
