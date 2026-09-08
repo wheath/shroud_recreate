@@ -64,18 +64,76 @@ These are **processing steps**, not objects. Order is physical: reordering chang
 result, and some orders are wrong. Order is **fixed-but-reorderable via up/down
 arrows** (no free drag — free drag would imply a compositing model that doesn't exist).
 
-Top to bottom:
+The stack below is the full pipeline from the book (Appendix B, ten steps), expressed
+as layers with **top = applied last**. Reading it top-to-bottom is reading the pipeline
+in reverse; reading bottom-to-top is the order the engine actually applies it. Each
+layer has a visibility eye; several carry a **wrong-version switch** so the user can
+select a documented dead-end and watch validation fail.
 
-1. **Sepia colour** — final Maillard sepia-scorch tone curve.
-2. **Transparency** — face bleeds into the linen (alpha composite, capped opacity).
-3. **Weave** — slub-noise herringbone sampling. Wrong version available: *sinusoid*.
-4. **Scattering** — lateral bleed/diffusion through the air gap.
-5. **Blur** — pre-blur so hard anatomical edges never form.
+Top to bottom (last-applied first):
 
-(Additional formation steps from the book — half-tone, banding, distance cutoff,
-grazing de-shade, warp/disintegration — belong in this group too; the five above are
-the representative set drawn in the mockup. De-shade carries wrong versions *linear*
-and *phong-shading*.)
+1. **Sepia colour** — final Maillard sepia-scorch tone curve, ivory → straw →
+   chestnut. Off = grayscale. Always last.
+2. **Transparency + linen** — the face is composited as a translucent layer over a
+   mottled linen ground, opacity driven by relief and capped (`max_opacity ≈ 0.72`) so
+   it never becomes solid paint. This is also what makes disintegration read correctly
+   (see below), so the two are **one layer**, not two. Off = the face sits on black,
+   which is the classic "glowing ghost" mistake — flagged.
+3. **Disintegration** — weak regions are stochastically deleted in clustered patches so
+   the image looks incomplete/ancient; because it composites over the linen ground
+   (layer 2), the gaps read as fabric showing through, not black holes. Amount slider.
+   Wrong version: *hard threshold* (the pre-v10 binary mask, which leaves blocky
+   cut-outs) vs the faithful continuous opacity.
+4. **Warp** — a low-frequency displacement field bends the intensity and weave together.
+   Off = *pristine* (the model's native symmetry, a straight clean face); on =
+   *authentic* (the crooked, hand-handled character of real folded cloth — tilted mouth,
+   deviated nose, wandering hairlines). This is the `warp_geometry` flag; `warp_amplitude`
+   sets how far it bends. Not distortion for its own sake — it is what a real, repeatedly
+   folded cloth does to a projected image.
+5. **Weave** — the herringbone twill, rendered as slub-noise (anisotropic-filtered noise
+   rotated ±45°) so its spectrum is a diffuse diamond. Amount slider. Wrong version:
+   *sinusoid* — a periodic generator that betrays itself as FFT needle-spikes.
+6. **Banding** — irregular 1D pirn/yarn-batch bands adding mid-scale tonal mottle. Must
+   be irregular; wrong version: *blocky/periodic* (which also throws FFT spikes).
+7. **Scattering** — global lateral diffusion, the gas/radiation bleed through the air
+   gap that gives the out-of-focus haze. Amount slider.
+8. **Half-tone** — tone is rendered as the *density* of on/off fibre dots (dither), not
+   smooth shading; this is what produces graininess, dissolving edges, and the ghost
+   quality for free. Wrong version: *smooth gradient* (the "drawn on glass" look).
+9. **Faintness / exposure** — contrast compression plus a background-floor lift so the
+   image whispers just above the linen rather than shouting. Slider. The lessons are
+   emphatic here: pushing it high (approaching white/black) is the "too much contrast"
+   mistake and trips the flag. Off = uncompressed, which reads as a stencil.
+10. **Grazing de-shade** — attenuates only near-silhouette angles via a steep sigmoid, so
+    surface tilt is corrected without introducing a light source. Wrong versions:
+    *linear* (reads as an overhead lamp — the "lit bust") and *phong-shading* (a full
+    lighting model, the thing the image must never contain). Off = no tilt correction.
+11. **Distance cutoff** — past a few cm of cloth-to-body gap nothing registers, so the
+    face floats and the eye sockets, sides, and neck fall away. Slider = cutoff distance
+    (~3.7–4.8 cm). Off = nothing floats; the whole head images and the characteristic
+    Shroud framing is lost.
+12. **Drape** — the smooth-envelope sag (grey-dilation → large Gaussian → clamp) that
+    compresses the distance range so the face comes out faint and flat. Off = flat rigid
+    cloth (no sag into hollows). Wrong version: *membrane relaxation* — the physically
+    fancier Jacobi drape that stamps false hard rims around the eyes and hairline, the one
+    artifact the relic never has.
+13. **Blur (pre-blur)** — blurs the depth map at the source so hard anatomical edges
+    (eyelid creases, lip lines) never form. Applied first of all; the relic has no lines.
+
+Notes on placement:
+
+- **Disintegration and transparency were merged** (item 2 absorbs the compositing that
+  disintegration depends on) because the book itself refined the hard-threshold
+  disintegration (v9) into the continuous alpha-transparency approach (v10); by v10 the
+  late-stage "how the face dissolves into the linen" is a single concern. Item 3 keeps
+  the *deletion* behaviour distinct as its own toggle for pedagogy, but it has no
+  meaning with layer 2 off.
+- **Drape and faintness are their own layers** (items 12 and 9). Drape is distinct from
+  the Cloth scene layer's *height*: height is where the plane sits (geometry), drape is
+  how the cloth sags over the body (an operation on the distance field). Both are real,
+  both are exposed. Base intensity and the variable/distance-binned blur remain the
+  always-on core of the render (not toggleable layers) — everything else in the pipeline
+  is a layer.
 
 ### Scene layers (the physical setup)
 
