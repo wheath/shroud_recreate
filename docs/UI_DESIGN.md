@@ -100,15 +100,24 @@ Top to bottom (last-applied first):
 8. **Half-tone** — tone is rendered as the *density* of on/off fibre dots (dither), not
    smooth shading; this is what produces graininess, dissolving edges, and the ghost
    quality for free. Wrong version: *smooth gradient* (the "drawn on glass" look).
-9. **Grazing de-shade** — attenuates only near-silhouette angles via a steep sigmoid, so
-   surface tilt is corrected without introducing a light source. Wrong versions:
-   *linear* (reads as an overhead lamp — the "lit bust") and *phong-shading* (a full
-   lighting model, the thing the image must never contain). Off = no tilt correction.
-10. **Distance cutoff** — past a few cm of cloth-to-body gap nothing registers, so the
+9. **Faintness / exposure** — contrast compression plus a background-floor lift so the
+   image whispers just above the linen rather than shouting. Slider. The lessons are
+   emphatic here: pushing it high (approaching white/black) is the "too much contrast"
+   mistake and trips the flag. Off = uncompressed, which reads as a stencil.
+10. **Grazing de-shade** — attenuates only near-silhouette angles via a steep sigmoid, so
+    surface tilt is corrected without introducing a light source. Wrong versions:
+    *linear* (reads as an overhead lamp — the "lit bust") and *phong-shading* (a full
+    lighting model, the thing the image must never contain). Off = no tilt correction.
+11. **Distance cutoff** — past a few cm of cloth-to-body gap nothing registers, so the
     face floats and the eye sockets, sides, and neck fall away. Slider = cutoff distance
     (~3.7–4.8 cm). Off = nothing floats; the whole head images and the characteristic
     Shroud framing is lost.
-11. **Blur (pre-blur)** — blurs the depth map at the source so hard anatomical edges
+12. **Drape** — the smooth-envelope sag (grey-dilation → large Gaussian → clamp) that
+    compresses the distance range so the face comes out faint and flat. Off = flat rigid
+    cloth (no sag into hollows). Wrong version: *membrane relaxation* — the physically
+    fancier Jacobi drape that stamps false hard rims around the eyes and hairline, the one
+    artifact the relic never has.
+13. **Blur (pre-blur)** — blurs the depth map at the source so hard anatomical edges
     (eyelid creases, lip lines) never form. Applied first of all; the relic has no lines.
 
 Notes on placement:
@@ -119,12 +128,12 @@ Notes on placement:
   late-stage "how the face dissolves into the linen" is a single concern. Item 3 keeps
   the *deletion* behaviour distinct as its own toggle for pedagogy, but it has no
   meaning with layer 2 off.
-- **Draping and base-intensity/exposure** (book steps 2, 4-floor, 5) are not exposed as
-  their own effect layers here: the drape is a property of the Cloth scene layer (its
-  height *is* the imaging distance), and base intensity + exposure floor are the always-on
-  core of the render rather than optional stages. If experimentation on the drape or the
-  faintness floor is wanted, they become a **Faintness** control on the Cloth layer and a
-  drape option there — noted as an open question rather than settled.
+- **Drape and faintness are their own layers** (items 12 and 9). Drape is distinct from
+  the Cloth scene layer's *height*: height is where the plane sits (geometry), drape is
+  how the cloth sags over the body (an operation on the distance field). Both are real,
+  both are exposed. Base intensity and the variable/distance-binned blur remain the
+  always-on core of the render (not toggleable layers) — everything else in the pipeline
+  is a layer.
 
 ### Scene layers (the physical setup)
 
