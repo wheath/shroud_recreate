@@ -29,3 +29,8 @@ venv/
 *.npy
 *.obj
 *.ply
+
+# ---- Third-party CC BY 4.0 assets (tracked despite the *.obj rule above) ----
+# The Moraes Shroud 3D model + our decimated derivatives are CC BY 4.0 and ARE
+# committed, with attribution in third_party/moraes/NOTICE.md.
+!third_party/moraes/**
