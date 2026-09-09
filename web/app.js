@@ -4,6 +4,7 @@
 //   #53 load + maneuver the working model (2D view = authority, 3D view = inspect)
 //   #54 the cutting (shroud) plane
 //   #55 distance-to-grayscale projection
+//   #56 default public-domain reference image, loaded on init
 //
 // Projection method (adopted from an earlier prototype, cleaner than reading the
 // depth buffer): render the mesh with a shader that outputs *world Y* as gray,
@@ -220,6 +221,41 @@ el2d.addEventListener("pointermove", (e) => {
 el2d.addEventListener("pointerup", (e) => {
   drag = null;
   try { el2d.releasePointerCapture(e.pointerId); } catch {}
+});
+
+// ---------------------------------------------------------------- reference image (#56)
+// Load the committed public-domain reference on init; fall back to load-your-own
+// if the file isn't present. User-loaded images stay in the browser.
+const REFERENCE_URL = "../reference/shroud_of_turin_pos_neg_face.jpg";
+const refImg = document.getElementById("refImg");
+const refEmpty = document.getElementById("refEmpty");
+const refWrap = document.getElementById("refWrap");
+const refFile = document.getElementById("refFile");
+
+function showRef(src) {
+  refImg.src = src;
+  refImg.style.display = "block";
+  refEmpty.style.display = "none";
+}
+function refFallbackMessage() {
+  refEmpty.textContent = "click to load a reference image (stays in your browser)";
+  refEmpty.style.display = "block";
+  refImg.style.display = "none";
+}
+// try the default; if it 404s or errors, drop to load-your-own
+refImg.addEventListener("error", refFallbackMessage);
+(function loadDefaultReference() {
+  const probe = new Image();
+  probe.onload = () => showRef(REFERENCE_URL);
+  probe.onerror = refFallbackMessage;
+  probe.src = REFERENCE_URL;
+})();
+// load-your-own override
+refWrap.addEventListener("click", () => refFile.click());
+refFile.addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  showRef(URL.createObjectURL(f));   // object URL — never leaves the browser
 });
 
 // ---------------------------------------------------------------- plane control (#54)
