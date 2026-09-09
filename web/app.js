@@ -23,20 +23,30 @@ import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 
 const MODEL_URL = "../third_party/moraes/body_3d_dec5000.obj";
 
-// Face+neck region bounds, measured from the Moraes mesh (original coords).
-// Reused from prototype metadata so the projection frames the head, not the
-// whole body. If the model file changes, recompute these from the mesh.
-const HEAD = {
+// Head region — starts from prototype coords, but is REPLACED with values
+// measured from the actual loaded mesh (see deriveHeadRegion). Mutable, because
+// a re-exported/decimated OBJ may be centered or scaled differently.
+let HEAD = {
   x: [-0.21769897639751434, 0.26493290066719055],
   y: [-0.26608800888061523, 0.24115604162216187],
   z: [-1.3547191619873047, -0.7841088175773621],
 };
-const hcx = (HEAD.x[0] + HEAD.x[1]) / 2;
-const hcz = (HEAD.z[0] + HEAD.z[1]) / 2;
-const hw = HEAD.x[1] - HEAD.x[0];
-const hd = HEAD.z[1] - HEAD.z[0];
+let hcx = (HEAD.x[0] + HEAD.x[1]) / 2;
+let hcz = (HEAD.z[0] + HEAD.z[1]) / 2;
+let hw = HEAD.x[1] - HEAD.x[0];
+let hd = HEAD.z[1] - HEAD.z[0];
+
+function recomputeHeadDerived() {
+  hcx = (HEAD.x[0] + HEAD.x[1]) / 2;
+  hcz = (HEAD.z[0] + HEAD.z[1]) / 2;
+  hw = HEAD.x[1] - HEAD.x[0];
+  hd = HEAD.z[1] - HEAD.z[0];
+}
 
 const PROJ_W = 220, PROJ_H = 280;
+
+// plane height slider (declared early — rebuildSceneHelpers configures it)
+const planeSlider = document.getElementById("planeHeight");
 
 const state = {
   mesh3: null,     // mesh in the 3D inspect scene
@@ -69,30 +79,42 @@ scene.add(new THREE.HemisphereLight(0xbfc7d2, 0x1a1a1f, 0.9));
 const dl = new THREE.DirectionalLight(0xffffff, 0.85); dl.position.set(3, 6, 5); scene.add(dl);
 const dl2 = new THREE.DirectionalLight(0x88a0c0, 0.3); dl2.position.set(-4, 2, -5); scene.add(dl2);
 
-// cutting / shroud plane, framed over the head (#54)
+// cutting / shroud plane + projection box — created empty, sized in rebuildSceneHelpers()
 const planeMesh = new THREE.Mesh(
-  new THREE.PlaneGeometry(hw * 1.3, hd * 1.3),
+  new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ color: 0x3d7bd4, transparent: true, opacity: 0.15,
     side: THREE.DoubleSide, depthWrite: false })
 );
 planeMesh.rotation.x = -Math.PI / 2;
-planeMesh.position.set(hcx, state.planeY, hcz);
 scene.add(planeMesh);
 const planeEdge = new THREE.LineSegments(
-  new THREE.EdgesGeometry(new THREE.PlaneGeometry(hw * 1.3, hd * 1.3)),
+  new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)),
   new THREE.LineBasicMaterial({ color: 0x3d7bd4, transparent: true, opacity: 0.6 })
 );
 planeEdge.rotation.x = -Math.PI / 2;
-planeEdge.position.copy(planeMesh.position);
 scene.add(planeEdge);
 
-// projection box over the head, showing what the 2D projection captures
-const projBox = new THREE.Box3(
-  new THREE.Vector3(HEAD.x[0], HEAD.y[0] - 0.05, HEAD.z[0]),
-  new THREE.Vector3(HEAD.x[1], state.planeY, HEAD.z[1])
-);
+const projBox = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
 const boxHelper = new THREE.Box3Helper(projBox, 0x5a8fb0);
 scene.add(boxHelper);
+
+function rebuildSceneHelpers() {
+  const pw = hw * 1.3, pd = hd * 1.3;
+  planeMesh.geometry.dispose();
+  planeMesh.geometry = new THREE.PlaneGeometry(pw, pd);
+  planeMesh.position.set(hcx, state.planeY, hcz);
+  planeEdge.geometry.dispose();
+  planeEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(pw, pd));
+  planeEdge.position.set(hcx, state.planeY, hcz);
+  projBox.min.set(HEAD.x[0], HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0]);
+  projBox.max.set(HEAD.x[1], state.planeY, HEAD.z[1]);
+  boxHelper.box.copy(projBox);
+  // keep the plane slider range sensible for this model's scale
+  planeSlider.min = (HEAD.y[1]).toFixed(3);
+  planeSlider.max = (HEAD.y[1] + (hw + hd) * 0.8).toFixed(3);
+  planeSlider.step = ((hw + hd) * 0.01).toFixed(4);
+  planeSlider.value = String(state.planeY);
+}
 
 // ---------------------------------------------------------------- projection (#55)
 // Separate scene: the SAME geometry with a world-Y -> gray shader.
@@ -119,13 +141,21 @@ const distMat = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
 });
 
-// orthographic camera aligned with the (horizontal) plane, framed on the head
-const mx = hw * 0.12, mz = hd * 0.12;
-const halfW = hw / 2 + mx, halfH = hd / 2 + mz;
-const camP = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.01, 40);
+// orthographic camera aligned with the (horizontal) plane, framed on the head.
+// Sized in setupProjectionCamera() once the real head region is known.
+const camP = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 40);
 camP.up.set(0, 0, -1);                    // head (low z) toward top of image
-camP.position.set(hcx, 20.0, hcz);
-camP.lookAt(hcx, -2.0, hcz);
+
+function setupProjectionCamera() {
+  const mx = hw * 0.12, mz = hd * 0.12;
+  const halfW = hw / 2 + mx, halfH = hd / 2 + mz;
+  camP.left = -halfW; camP.right = halfW; camP.top = halfH; camP.bottom = -halfH;
+  camP.near = 0.01; camP.far = (hw + hd) * 20 + 5;
+  camP.position.set(hcx, HEAD.y[1] + (hw + hd) * 10, hcz);
+  camP.up.set(0, 0, -1);
+  camP.lookAt(hcx, HEAD.y[0] - 1, hcz);
+  camP.updateProjectionMatrix();
+}
 
 const projCanvas = document.getElementById("projCanvas");
 projCanvas.width = PROJ_W; projCanvas.height = PROJ_H;
@@ -152,6 +182,15 @@ new OBJLoader().load(
     state.meshP = new THREE.Mesh(geo, distMat);
     sceneP.add(state.meshP);
 
+    // Measure the real mesh and rebuild everything that depended on the
+    // hardcoded head coords (the OBJ may be centered/scaled differently).
+    HEAD = deriveHeadRegion(geo);
+    recomputeHeadDerived();
+    // default the plane just above the head's top surface
+    state.planeY = HEAD.y[1] + (hw + hd) * 0.25;
+    rebuildSceneHelpers();
+    setupProjectionCamera();
+
     headLocal = collectHeadVerts(geo);
 
     frame3dCamera();
@@ -174,6 +213,42 @@ function collectHeadVerts(geo) {
     }
   }
   return new Float32Array(out);
+}
+
+// Derive the head region from the ACTUAL loaded mesh rather than trusting
+// hardcoded prototype coords (a re-exported/decimated OBJ may be centered or
+// scaled differently). The body is a reclining figure long in Z; the head is
+// the end with the highest surface relief. We take the head as the portion of
+// the long-axis range nearest one end, then bound its cross-axis and Y extent.
+function deriveHeadRegion(geo) {
+  const bb = new THREE.Box3().setFromBufferAttribute(geo.getAttribute("position"));
+  const size = bb.getSize(new THREE.Vector3());
+  const bodyLongAxis = size.z >= size.x ? "z" : "x";
+  const p = geo.getAttribute("position");
+  const along = (i) => bodyLongAxis === "z" ? p.getZ(i) : p.getX(i);
+  const lo = bodyLongAxis === "z" ? bb.min.z : bb.min.x;
+  const hi = bodyLongAxis === "z" ? bb.max.z : bb.max.x;
+  const chunk = (hi - lo) / 6;
+  // measure vertical relief (Y span) in each end chunk; the head has more
+  let loMinY = 1e9, loMaxY = -1e9, hiMinY = 1e9, hiMaxY = -1e9;
+  for (let i = 0; i < p.count; i++) {
+    const a = along(i), y = p.getY(i);
+    if (a <= lo + chunk) { if (y < loMinY) loMinY = y; if (y > loMaxY) loMaxY = y; }
+    if (a >= hi - chunk) { if (y < hiMinY) hiMinY = y; if (y > hiMaxY) hiMaxY = y; }
+  }
+  const headAtLo = (loMaxY - loMinY) >= (hiMaxY - hiMinY);
+  const aMin = headAtLo ? lo : hi - chunk;
+  const aMax = headAtLo ? lo + chunk : hi;
+  let xmin = 1e9, xmax = -1e9, zmin = 1e9, zmax = -1e9, ymin = 1e9, ymax = -1e9;
+  for (let i = 0; i < p.count; i++) {
+    const a = along(i);
+    if (a < aMin || a > aMax) continue;
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+    if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+    if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+  }
+  return { x: [xmin, xmax], y: [ymin, ymax], z: [zmin, zmax] };
 }
 
 // ---------------------------------------------------------------- pose sync (2D authority, #53)
@@ -260,7 +335,6 @@ refFile.addEventListener("change", (e) => {
 });
 
 // ---------------------------------------------------------------- plane control (#54)
-const planeSlider = document.getElementById("planeHeight");
 planeSlider.addEventListener("input", () => {
   state.planeY = parseFloat(planeSlider.value);
   planeMesh.position.y = state.planeY;
@@ -272,27 +346,26 @@ planeSlider.addEventListener("input", () => {
 
 // ---------------------------------------------------------------- cameras / render
 function frame3dCamera() {
-  const off = Math.max(hw, hd) * 2.2;   // ~1.25 units: frames the head, not inside it
-  view3d.camera.near = 0.01;
-  view3d.camera.far = 100;
-  view3d.camera.position.set(hcx + off, off * 0.7, hcz + off);
+  const off = Math.max(hw, hd) * 2.2;   // frames the head, not inside it
+  view3d.camera.near = 0.001;
+  view3d.camera.far = 1000;
+  view3d.camera.position.set(hcx + off, HEAD.y[1] + off * 0.7, hcz + off);
   view3d.camera.updateProjectionMatrix();
-  controls3d.target.set(hcx, 0.0, hcz);
+  controls3d.target.set(hcx, (HEAD.y[0] + HEAD.y[1]) / 2, hcz);
   controls3d.update();
 }
 
 function positionTopDownCamera() {
-  const half = Math.max(hw, hd) * 0.8;   // ~0.46: tight frame on the head
+  const half = Math.max(hw, hd) * 0.8;   // tight frame on the head
   const cam = view2d.camera;
   const c = view2d.renderer.domElement;
   const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
-  // fit the head box into the viewport while preserving aspect
   cam.left = -half * aspect; cam.right = half * aspect;
   cam.top = half; cam.bottom = -half;
-  cam.near = 0.01; cam.far = 100;
-  cam.position.set(hcx, 10, hcz);        // above the head, looking down -Y
+  cam.near = 0.001; cam.far = 1000;
+  cam.position.set(hcx, HEAD.y[1] + Math.max(hw, hd) * 4, hcz);  // above head, looking down
   cam.up.set(0, 0, -1);                  // head (low z) toward top of view
-  cam.lookAt(hcx, 0, hcz);
+  cam.lookAt(hcx, HEAD.y[0], hcz);
   cam.updateProjectionMatrix();
 }
 positionTopDownCamera();
