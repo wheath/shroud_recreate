@@ -155,6 +155,7 @@ new OBJLoader().load(
     headLocal = collectHeadVerts(geo);
 
     frame3dCamera();
+    positionTopDownCamera();
     setStatus(`Ready · ${(geo.getAttribute("position").count).toLocaleString()} verts`);
     render();
   },
@@ -271,17 +272,26 @@ planeSlider.addEventListener("input", () => {
 
 // ---------------------------------------------------------------- cameras / render
 function frame3dCamera() {
-  view3d.camera.position.set(hcx + 1.4, 1.0, hcz + 1.4);
+  const off = Math.max(hw, hd) * 2.2;   // ~1.25 units: frames the head, not inside it
+  view3d.camera.near = 0.01;
+  view3d.camera.far = 100;
+  view3d.camera.position.set(hcx + off, off * 0.7, hcz + off);
+  view3d.camera.updateProjectionMatrix();
   controls3d.target.set(hcx, 0.0, hcz);
   controls3d.update();
 }
 
 function positionTopDownCamera() {
-  const half = Math.max(hw, hd) * 1.4;
+  const half = Math.max(hw, hd) * 0.8;   // ~0.46: tight frame on the head
   const cam = view2d.camera;
-  cam.left = -half; cam.right = half; cam.top = half; cam.bottom = -half;
-  cam.position.set(hcx, 20, hcz);
-  cam.up.set(0, 0, -1);
+  const c = view2d.renderer.domElement;
+  const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
+  // fit the head box into the viewport while preserving aspect
+  cam.left = -half * aspect; cam.right = half * aspect;
+  cam.top = half; cam.bottom = -half;
+  cam.near = 0.01; cam.far = 100;
+  cam.position.set(hcx, 10, hcz);        // above the head, looking down -Y
+  cam.up.set(0, 0, -1);                  // head (low z) toward top of view
   cam.lookAt(hcx, 0, hcz);
   cam.updateProjectionMatrix();
 }
