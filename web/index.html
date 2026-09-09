@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>shroud_recreate — projection workbench</title>
+<style>
+  :root {
+    --bg: #101216;
+    --panel: #181b21;
+    --panel-2: #1e222a;
+    --line: #2a2f3a;
+    --ink: #d7dae0;
+    --ink-dim: #8a8f99;
+    --accent: #3d7bd4;
+    --warn: #d8a24a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+  header .tag { font-size: 11px; color: var(--ink-dim); border: 1px solid var(--line);
+    padding: 2px 8px; border-radius: 999px; }
+  header #status { margin-left: auto; font-size: 12px; color: var(--ink-dim); }
+
+  main { display: grid; grid-template-columns: 1fr 1fr 300px; gap: 1px;
+    background: var(--line); min-height: 0; }
+  .pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .pane > .cap { font-size: 11px; color: var(--ink-dim); padding: 7px 11px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; justify-content: space-between; align-items: center; }
+  .cap .hint { color: #666c78; }
+  .stage { flex: 1; position: relative; min-height: 0; }
+  canvas.gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* projection output pane */
+  .proj-wrap { flex: 1; display: flex; align-items: center; justify-content: center;
+    background: #000; min-height: 0; }
+  #projCanvas { max-width: 100%; max-height: 100%; image-rendering: auto;
+    background: #000; }
+
+  /* control dock */
+  .dock { background: var(--panel); overflow-y: auto; }
+  .dock .cap { position: sticky; top: 0; }
+  .group { padding: 12px 12px 14px; border-bottom: 1px solid var(--line); }
+  .group h2 { font-size: 11px; font-weight: 600; color: var(--ink-dim);
+    margin: 0 0 10px; letter-spacing: 0.02em; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; }
+  .row label { font-size: 12px; color: var(--ink); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .val { font-size: 11px; color: var(--ink-dim); min-width: 34px; text-align: right; }
+
+  .placeholder { opacity: 0.5; pointer-events: none; }
+  .placeholder .soon { font-size: 10px; color: var(--warn); border: 1px solid #4a3d22;
+    background: #24200f; padding: 1px 6px; border-radius: 999px; }
+  .helpline { font-size: 11px; color: var(--ink-dim); margin: 2px 0 0; }
+
+  footer { grid-column: 1 / -1; }
+  .credit { font-size: 10px; color: #5b616c; padding: 6px 12px; border-top: 1px solid var(--line);
+    background: var(--panel); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>shroud_recreate</h1>
+    <span class="tag">projection workbench · MVP</span>
+    <span id="status">Starting…</span>
+  </header>
+
+  <main>
+    <!-- 2D authority view -->
+    <section class="pane">
+      <div class="cap"><span>2D view · authority</span><span class="hint">drag rotate · shift-drag move</span></div>
+      <div class="stage"><canvas id="view2d" class="gl"></canvas></div>
+    </section>
+
+    <!-- 3D inspect view -->
+    <section class="pane">
+      <div class="cap"><span>3D view · inspect</span><span class="hint">orbit · pan · zoom</span></div>
+      <div class="stage"><canvas id="view3d" class="gl"></canvas></div>
+    </section>
+
+    <!-- controls + projection output -->
+    <aside class="pane dock">
+      <div class="cap"><span>Controls</span></div>
+
+      <div class="group">
+        <h2>Projection output</h2>
+        <div class="proj-wrap" style="height:180px;border:1px solid var(--line);border-radius:6px;">
+          <canvas id="projCanvas"></canvas>
+        </div>
+        <p class="helpline">Distance &rarr; grayscale. Farthest = black (0), closest = white (1). Linear, no adjustment.</p>
+      </div>
+
+      <div class="group">
+        <h2>Cutting / shroud plane</h2>
+        <div class="row"><label for="planeHeight">Height</label></div>
+        <input id="planeHeight" type="range" min="0.2" max="2.5" step="0.01" value="1.2" />
+        <p class="helpline">The plane the image forms on. Its normal is the projection direction.</p>
+      </div>
+
+      <div class="group placeholder">
+        <h2>Pipeline <span class="soon">coming soon</span></h2>
+        <div class="row"><label>Weave</label><input type="range" disabled /></div>
+        <div class="row"><label>Scattering / haze</label><input type="range" disabled /></div>
+        <div class="row"><label>Faintness</label><input type="range" disabled /></div>
+        <div class="row"><label>Warp</label><input type="range" disabled /></div>
+        <div class="row"><label>Opacity</label><input type="range" disabled /></div>
+        <div class="row"><label>Sepia</label><input type="range" disabled /></div>
+        <p class="helpline">Deferred to later epics &mdash; placeholders only.</p>
+      </div>
+
+      <div class="group placeholder">
+        <h2>Inputs <span class="soon">coming soon</span></h2>
+        <div class="row"><label>Load working model</label></div>
+        <div class="row"><label>Load reference image</label></div>
+        <div class="row"><label>Load reference 3D model</label></div>
+        <div class="row"><label>Blood mask</label></div>
+      </div>
+    </aside>
+
+    <footer>
+      <div class="credit">
+        3D model: &ldquo;Data &ndash; 3D files &ndash; Shroud of Turin&rdquo; by C&iacute;cero Moraes, CC BY 4.0
+        (<a href="https://creativecommons.org/licenses/by/4.0/">license</a>). Decimated for real-time use.
+        Runs entirely in your browser &mdash; no data leaves your device.
+      </div>
+    </footer>
+  </main>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
