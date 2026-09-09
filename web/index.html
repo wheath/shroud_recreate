@@ -37,11 +37,10 @@
   .stage { flex: 1; position: relative; min-height: 0; }
   canvas.gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
-  /* projection output pane */
+  /* projection / reference image wraps */
   .proj-wrap { flex: 1; display: flex; align-items: center; justify-content: center;
     background: #000; min-height: 0; }
-  #projCanvas { max-width: 100%; max-height: 100%; image-rendering: auto;
-    background: #000; }
+  #projCanvas { max-width: 100%; max-height: 100%; image-rendering: auto; background: #000; }
 
   /* control dock */
   .dock { background: var(--panel); overflow-y: auto; }
@@ -98,6 +97,16 @@
       </div>
 
       <div class="group">
+        <h2>Reference</h2>
+        <div class="proj-wrap" id="refWrap" style="height:230px;border:1px solid var(--line);border-radius:6px;cursor:pointer;position:relative;">
+          <img id="refImg" alt="reference Shroud image" style="max-width:100%;max-height:100%;display:none;" />
+          <div id="refEmpty" style="color:var(--ink-dim);font-size:11px;text-align:center;padding:12px;line-height:1.5;">loading reference&hellip;</div>
+        </div>
+        <input type="file" id="refFile" accept="image/*" style="display:none;" />
+        <p class="helpline">Public-domain Shroud image, loaded by default. Click to load your own (stays in your browser).</p>
+      </div>
+
+      <div class="group">
         <h2>Cutting / shroud plane</h2>
         <div class="row"><label for="planeHeight">Height</label></div>
         <input id="planeHeight" type="range" min="0.2" max="2.5" step="0.01" value="1.4" />
@@ -118,7 +127,6 @@
       <div class="group placeholder">
         <h2>Inputs <span class="soon">coming soon</span></h2>
         <div class="row"><label>Load working model</label></div>
-        <div class="row"><label>Load reference image</label></div>
         <div class="row"><label>Load reference 3D model</label></div>
         <div class="row"><label>Blood mask</label></div>
       </div>
@@ -128,7 +136,7 @@
       <div class="credit">
         3D model: &ldquo;Data &ndash; 3D files &ndash; Shroud of Turin&rdquo; by C&iacute;cero Moraes, CC BY 4.0
         (<a href="https://creativecommons.org/licenses/by/4.0/">license</a>). Decimated for real-time use.
-        Runs entirely in your browser &mdash; no data leaves your device.
+        Reference image: public domain (Secondo Pia, 1898). Runs entirely in your browser &mdash; no data leaves your device.
       </div>
     </footer>
   </main>
