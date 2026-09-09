@@ -6,16 +6,20 @@
 //   #55 distance-to-grayscale projection
 //   #56 default public-domain reference image, loaded on init
 //
-// Projection method (adopted from an earlier prototype, cleaner than reading the
-// depth buffer): render the mesh with a shader that outputs *world Y* as gray,
-// normalized to the model's face-region Y span. Because the cutting plane is
-// horizontal, world-Y IS the distance to the plane. Farthest = 0 (black),
-// closest = 1 (white), linear, no tone curve.
+// The 2D area is the single output surface. What it shows depends on the active
+// layer (click a layer to switch): "3D model" = the raw shaded model looking
+// down through the plane; "Distance projection" = the world-Y grayscale image
+// (near the plane = white, far = black, linear, no tone curve). The 2D area is
+// always the drag-to-pose authority; the 3D strip reflects the pose and can be
+// orbited to inspect without changing it.
 //
-// LIMITATION (documented on purpose): this world-Y shortcut assumes a HORIZONTAL
-// plane. When the plane is allowed to tilt (later epic), switch to measuring
-// distance along the plane normal (transform verts into plane space, or read a
-// depth buffer rendered along the plane normal).
+// Projection method: render the model with a shader that outputs world-Y as
+// gray, normalized to the head's Y span. Because the cutting plane is
+// horizontal, world-Y IS the distance to the plane.
+//
+// LIMITATION (documented on purpose): the world-Y shortcut assumes a HORIZONTAL
+// plane. When the plane can tilt (later epic), measure distance along the plane
+// normal instead.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -24,8 +28,7 @@ import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 const MODEL_URL = "../third_party/moraes/body_3d_dec5000.obj";
 
 // Head region — starts from prototype coords, but is REPLACED with values
-// measured from the actual loaded mesh (see deriveHeadRegion). Mutable, because
-// a re-exported/decimated OBJ may be centered or scaled differently.
+// measured from the actual loaded mesh (see deriveHeadRegion). Mutable.
 let HEAD = {
   x: [-0.21769897639751434, 0.26493290066719055],
   y: [-0.26608800888061523, 0.24115604162216187],
@@ -43,15 +46,13 @@ function recomputeHeadDerived() {
   hd = HEAD.z[1] - HEAD.z[0];
 }
 
-const PROJ_W = 220, PROJ_H = 280;
-
 // plane height slider (declared early — rebuildSceneHelpers configures it)
 const planeSlider = document.getElementById("planeHeight");
 
 const state = {
-  mesh3: null,     // mesh in the 3D inspect scene
-  meshP: null,     // same geometry in the projection scene (identical pose)
-  planeY: 1.4,     // cutting plane height (original model coords)
+  mesh3: null,     // the working model mesh
+  planeY: 1.4,     // cutting plane height (model coords)
+  viewMode: "projection",  // what the 2D area shows: "projection" | "model"
 };
 
 // ---------------------------------------------------------------- viewports
@@ -109,16 +110,15 @@ function rebuildSceneHelpers() {
   projBox.min.set(HEAD.x[0], HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0]);
   projBox.max.set(HEAD.x[1], state.planeY, HEAD.z[1]);
   boxHelper.box.copy(projBox);
-  // keep the plane slider range sensible for this model's scale
   planeSlider.min = (HEAD.y[1]).toFixed(3);
   planeSlider.max = (HEAD.y[1] + (hw + hd) * 0.8).toFixed(3);
   planeSlider.step = ((hw + hd) * 0.01).toFixed(4);
   planeSlider.value = String(state.planeY);
 }
 
-// ---------------------------------------------------------------- projection (#55)
-// Separate scene: the SAME geometry with a world-Y -> gray shader.
-const sceneP = new THREE.Scene();
+// ---------------------------------------------------------------- projection material (#55)
+// world-Y -> gray shader, applied to the model when the 2D area shows the
+// Distance projection layer. Normalized to the head's Y span each frame.
 const distMat = new THREE.ShaderMaterial({
   uniforms: { yMin: { value: 0 }, yMax: { value: 1 } },
   vertexShader: `
@@ -129,7 +129,6 @@ const distMat = new THREE.ShaderMaterial({
       gl_Position = projectionMatrix * viewMatrix * wp;
     }
   `,
-  // world-Y normalized to the head span; near the plane (high Y) -> white.
   fragmentShader: `
     uniform float yMin, yMax;
     varying float wY;
@@ -141,29 +140,6 @@ const distMat = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
 });
 
-// orthographic camera aligned with the (horizontal) plane, framed on the head.
-// Sized in setupProjectionCamera() once the real head region is known.
-const camP = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 40);
-camP.up.set(0, 0, -1);                    // head (low z) toward top of image
-
-function setupProjectionCamera() {
-  const mx = hw * 0.12, mz = hd * 0.12;
-  const halfW = hw / 2 + mx, halfH = hd / 2 + mz;
-  camP.left = -halfW; camP.right = halfW; camP.top = halfH; camP.bottom = -halfH;
-  camP.near = 0.01; camP.far = (hw + hd) * 20 + 5;
-  camP.position.set(hcx, HEAD.y[1] + (hw + hd) * 10, hcz);
-  camP.up.set(0, 0, -1);
-  camP.lookAt(hcx, HEAD.y[0] - 1, hcz);
-  camP.updateProjectionMatrix();
-}
-
-const projCanvas = document.getElementById("projCanvas");
-projCanvas.width = PROJ_W; projCanvas.height = PROJ_H;
-const projCtx = projCanvas.getContext("2d");
-const rP = new THREE.WebGLRenderer({ antialias: true, canvas: document.createElement("canvas") });
-rP.setPixelRatio(1); rP.setSize(PROJ_W, PROJ_H);
-const projTarget = new THREE.WebGLRenderTarget(PROJ_W, PROJ_H);
-const pix = new Uint8Array(PROJ_W * PROJ_H * 4);
 let headLocal = null;   // face-region vertex positions, for computing yMin/yMax
 
 // ---------------------------------------------------------------- load model (#53)
@@ -179,24 +155,20 @@ new OBJLoader().load(
     const mat3 = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.85, metalness: 0.0 });
     state.mesh3 = new THREE.Mesh(geo, mat3);
     scene.add(state.mesh3);
-    state.meshP = new THREE.Mesh(geo, distMat);
-    sceneP.add(state.meshP);
 
     // Measure the real mesh and rebuild everything that depended on the
     // hardcoded head coords (the OBJ may be centered/scaled differently).
     HEAD = deriveHeadRegion(geo);
     recomputeHeadDerived();
-    // default the plane just above the head's top surface
     state.planeY = HEAD.y[1] + (hw + hd) * 0.25;
     rebuildSceneHelpers();
-    setupProjectionCamera();
 
     headLocal = collectHeadVerts(geo);
 
     frame3dCamera();
     positionTopDownCamera();
+    setActiveLayer(state.viewMode);   // set initial active layer + render
     setStatus(`Ready · ${(geo.getAttribute("position").count).toLocaleString()} verts`);
-    render();
   },
   (xhr) => setStatus(`Loading model… ${((xhr.loaded / (xhr.total || xhr.loaded)) * 100) | 0}%`),
   (err) => { console.error(err); setStatus("Model failed to load — is third_party/moraes/ served?", true); }
@@ -217,9 +189,8 @@ function collectHeadVerts(geo) {
 
 // Derive the head region from the ACTUAL loaded mesh rather than trusting
 // hardcoded prototype coords (a re-exported/decimated OBJ may be centered or
-// scaled differently). The body is a reclining figure long in Z; the head is
-// the end with the highest surface relief. We take the head as the portion of
-// the long-axis range nearest one end, then bound its cross-axis and Y extent.
+// scaled differently). The body is a reclining figure long in one axis; the
+// head is the higher-relief end. Bound its cross-axis and Y extent.
 function deriveHeadRegion(geo) {
   const bb = new THREE.Box3().setFromBufferAttribute(geo.getAttribute("position"));
   const size = bb.getSize(new THREE.Vector3());
@@ -229,7 +200,6 @@ function deriveHeadRegion(geo) {
   const lo = bodyLongAxis === "z" ? bb.min.z : bb.min.x;
   const hi = bodyLongAxis === "z" ? bb.max.z : bb.max.x;
   const chunk = (hi - lo) / 6;
-  // measure vertical relief (Y span) in each end chunk; the head has more
   let loMinY = 1e9, loMaxY = -1e9, hiMinY = 1e9, hiMaxY = -1e9;
   for (let i = 0; i < p.count; i++) {
     const a = along(i), y = p.getY(i);
@@ -251,23 +221,19 @@ function deriveHeadRegion(geo) {
   return { x: [xmin, xmax], y: [ymin, ymax], z: [zmin, zmax] };
 }
 
-// ---------------------------------------------------------------- pose sync (2D authority, #53)
-// One shared pose drives both the inspect mesh and the projection mesh.
-// Dragging in the 2D view sets that pose; the 3D view reflects it.
+// ---------------------------------------------------------------- pose (2D authority, #53)
 const pose = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0 };
 
 function applyPose() {
   if (!state.mesh3) return;
-  for (const m of [state.mesh3, state.meshP]) {
-    m.rotation.set(pose.rx, pose.ry, pose.rz);
-    m.position.set(pose.tx, 0, pose.tz);
-    m.updateMatrixWorld();
-  }
+  state.mesh3.rotation.set(pose.rx, pose.ry, pose.rz);
+  state.mesh3.position.set(pose.tx, 0, pose.tz);
+  state.mesh3.updateMatrixWorld();
 }
 
 function updateProjNormalization() {
-  if (!headLocal || !state.meshP) return;
-  const m = state.meshP.matrixWorld;
+  if (!headLocal || !state.mesh3) return;
+  const m = state.mesh3.matrixWorld;
   const v = new THREE.Vector3();
   let mn = 1e9, mx2 = -1e9;
   for (let i = 0; i < headLocal.length; i += 3) {
@@ -279,7 +245,7 @@ function updateProjNormalization() {
   distMat.uniforms.yMax.value = mx2;  // nearest the plane   -> 1 (white)
 }
 
-// drag in 2D view = authority
+// drag in 2D view = authority (always active, whichever layer is shown)
 let drag = null;
 const el2d = view2d.renderer.domElement;
 el2d.addEventListener("pointerdown", (e) => {
@@ -318,7 +284,6 @@ function refFallbackMessage() {
   refEmpty.style.display = "block";
   refImg.style.display = "none";
 }
-// try the default; if it 404s or errors, drop to load-your-own
 refImg.addEventListener("error", refFallbackMessage);
 (function loadDefaultReference() {
   const probe = new Image();
@@ -326,7 +291,6 @@ refImg.addEventListener("error", refFallbackMessage);
   probe.onerror = refFallbackMessage;
   probe.src = REFERENCE_URL;
 })();
-// load-your-own override
 refWrap.addEventListener("click", () => refFile.click());
 refFile.addEventListener("change", (e) => {
   const f = e.target.files && e.target.files[0];
@@ -346,7 +310,7 @@ planeSlider.addEventListener("input", () => {
 
 // ---------------------------------------------------------------- cameras / render
 function frame3dCamera() {
-  const off = Math.max(hw, hd) * 2.2;   // frames the head, not inside it
+  const off = Math.max(hw, hd) * 2.2;
   view3d.camera.near = 0.001;
   view3d.camera.far = 1000;
   view3d.camera.position.set(hcx + off, HEAD.y[1] + off * 0.7, hcz + off);
@@ -356,7 +320,7 @@ function frame3dCamera() {
 }
 
 function positionTopDownCamera() {
-  const half = Math.max(hw, hd) * 0.8;   // tight frame on the head
+  const half = Math.max(hw, hd) * 0.8;
   const cam = view2d.camera;
   const c = view2d.renderer.domElement;
   const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
@@ -370,32 +334,39 @@ function positionTopDownCamera() {
 }
 positionTopDownCamera();
 
-function renderProjection() {
-  if (!state.meshP) return;
-  updateProjNormalization();
-  rP.setRenderTarget(projTarget);
-  rP.setClearColor(0x000000, 1);
-  rP.clear();
-  rP.render(sceneP, camP);
-  rP.setRenderTarget(null);
-  rP.readRenderTargetPixels(projTarget, 0, 0, PROJ_W, PROJ_H, pix);
-  const img = projCtx.createImageData(PROJ_W, PROJ_H);
-  for (let y = 0; y < PROJ_H; y++) {            // flip Y: GL bottom-left -> canvas top-left
-    const sy = PROJ_H - 1 - y;
-    for (let x = 0; x < PROJ_W; x++) {
-      const s = (sy * PROJ_W + x) * 4, d = (y * PROJ_W + x) * 4;
-      img.data[d] = pix[s]; img.data[d + 1] = pix[s + 1];
-      img.data[d + 2] = pix[s + 2]; img.data[d + 3] = 255;
-    }
-  }
-  projCtx.putImageData(img, 0, 0);
-}
-
 function render() {
   applyPose();
+  // 3D inspect view: always the shaded model + plane + box
   view3d.renderer.render(scene, view3d.camera);
-  view2d.renderer.render(scene, view2d.camera);
-  renderProjection();
+
+  // 2D area: raw shaded model OR grayscale distance projection, per active layer.
+  if (state.viewMode === "projection" && state.mesh3) {
+    updateProjNormalization();
+    const savedMat = state.mesh3.material;
+    const planeVis = planeMesh.visible, edgeVis = planeEdge.visible, boxVis = boxHelper.visible;
+    state.mesh3.material = distMat;
+    planeMesh.visible = planeEdge.visible = boxHelper.visible = false;
+    view2d.renderer.setClearColor(0x000000, 1);
+    view2d.renderer.render(scene, view2d.camera);
+    state.mesh3.material = savedMat;
+    planeMesh.visible = planeVis; planeEdge.visible = edgeVis; boxHelper.visible = boxVis;
+  } else {
+    view2d.renderer.setClearColor(0x14161a, 1);
+    view2d.renderer.render(scene, view2d.camera);
+  }
+}
+
+function setActiveLayer(mode) {
+  state.viewMode = mode;
+  for (const el of document.querySelectorAll(".layer[data-view]")) {
+    el.classList.toggle("active", el.dataset.view === mode);
+  }
+  const label = document.getElementById("activeLabel");
+  if (label) label.textContent = mode === "projection" ? "Distance projection" : "3D model";
+  render();
+}
+for (const el of document.querySelectorAll(".layer[data-view]")) {
+  el.addEventListener("click", () => setActiveLayer(el.dataset.view));
 }
 
 function animate() {
