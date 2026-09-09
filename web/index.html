@@ -91,16 +91,16 @@
 
       <div class="group">
         <h2>Projection output</h2>
-        <div class="proj-wrap" style="height:180px;border:1px solid var(--line);border-radius:6px;">
-          <canvas id="projCanvas"></canvas>
+        <div class="proj-wrap" style="height:230px;border:1px solid var(--line);border-radius:6px;">
+          <canvas id="projCanvas" style="height:100%;width:auto;"></canvas>
         </div>
-        <p class="helpline">Distance &rarr; grayscale. Farthest = black (0), closest = white (1). Linear, no adjustment.</p>
+        <p class="helpline">Distance &rarr; grayscale over the face/neck. Farthest = black (0), closest = white (1). Linear, no adjustment.</p>
       </div>
 
       <div class="group">
         <h2>Cutting / shroud plane</h2>
         <div class="row"><label for="planeHeight">Height</label></div>
-        <input id="planeHeight" type="range" min="0.2" max="2.5" step="0.01" value="1.2" />
+        <input id="planeHeight" type="range" min="0.2" max="2.5" step="0.01" value="1.4" />
         <p class="helpline">The plane the image forms on. Its normal is the projection direction.</p>
       </div>
 
