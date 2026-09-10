@@ -1,15 +1,15 @@
-// shroud_recreate — MVP web app  ·  v0.1.1
+// shroud_recreate — MVP web app  ·  v0.1.2
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Capture box (the 2D viewing frame shown in the bottom 3D view):
-//   STATIC        — fixed in world; the model moves/rotates relative to it.
-//   MOVE-WITH-MODEL — rides the model's full transform (translation + rotation).
-// It's a real transformable wireframe (not an axis-aligned Box3Helper, which
-// can't rotate).
+// Bottom 3D view (Blender-style):
+//   plain-drag = orbit camera (navigate; nothing in the scene moves)
+//   press G then move mouse = grab/move the model; press R then move = rotate
+//   click confirms, Esc cancels; "reset model position" snaps back
+//   the model transforms in world space while planes + capture box stay fixed
 //
-// Two poses: pose = AUTHORITATIVE (top 2D + projection); poseB = bottom inspection
-// pose (independent mode). Cloth plane owns the projection: Faithful (distance) vs
-// Shortcut (Phong light). Model shading phong/flat/bare + mesh-detail picker.
+// Two poses: pose = AUTHORITATIVE (top 2D + projection); poseB = bottom pose
+// (independent mode). Capture box: static (fixed) or move-with-model (rides pose).
+// Cloth plane owns the projection: Faithful (distance) vs Shortcut (Phong light).
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -19,7 +19,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
-const APP_VERSION = "v0.1.1";
+const APP_VERSION = "v0.1.2";
 console.log("shroud_recreate " + APP_VERSION);
 { const vEl = document.getElementById("version"); if (vEl) vEl.textContent = APP_VERSION; }
 
@@ -128,7 +128,6 @@ function rebuildSceneHelpers() {
   clipMesh.position.set(bcx, clipY, bcz);
   clipEdge.geometry.dispose(); clipEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
   clipEdge.position.set(bcx, clipY, bcz);
-  // capture region (head/neck) — world-space center + size; box geometry sized to it
   const cxMin = HEAD.x[0], cxMax = HEAD.x[1];
   const cyMin = HEAD.y[0] - (hw + hd) * 0.05, cyMax = state.planeY;
   const czMin = HEAD.z[0], czMax = HEAD.z[1];
@@ -311,15 +310,12 @@ function applyPoseObj(p) {
   state.mesh3.scale.setScalar(p.scale);
   state.mesh3.updateMatrixWorld();
 }
-// Apply the AUTHORITATIVE pose and transform the capture box.
 function applyPose() {
   applyPoseObj(pose);
   if (state.frameStatic) {
-    // Fixed in world — model moves/rotates relative to it.
     captureBox.position.copy(capCenter);
     captureBox.quaternion.identity();
   } else {
-    // Ride the model: rotation about the model origin, then translation.
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(pose.rx, pose.ry, pose.rz));
     const c = capCenter.clone().applyQuaternion(q);
     c.x += pose.tx; c.z += pose.tz;
@@ -375,28 +371,59 @@ el2d.addEventListener("wheel", (e) => {
   render();
 }, { passive: false });
 
-// ---- bottom 3D view: pose ONLY when independent; linked = inspect-only (orbit) ----
-let drag3 = null;
+// ---- bottom 3D view: Blender-style transforms ----
+// Plain-drag = orbit camera (OrbitControls). Press G then move = grab/move the
+// model; press R then move = rotate. Click confirms, Esc cancels. The model
+// transforms in world space while planes + capture box stay fixed.
+let xform = null;
 const el3d = view3d.renderer.domElement;
-el3d.addEventListener("pointerdown", (e) => {
-  if (state.linked || !e.shiftKey || !state.mesh3) return;  // plain drag → orbit
+
+function snapshotPose(p) { return { rx:p.rx, ry:p.ry, rz:p.rz, tx:p.tx, tz:p.tz, scale:p.scale }; }
+function restorePose(p, s) { p.rx=s.rx; p.ry=s.ry; p.rz=s.rz; p.tx=s.tx; p.tz=s.tz; p.scale=s.scale; }
+
+function startXform(mode) {
+  if (!state.mesh3) return;
+  const p = bottomPose();
+  xform = { mode, lastX: null, lastY: null, snapshot: snapshotPose(p) };
   controls3d.enabled = false;
-  drag3 = { x: e.clientX, y: e.clientY, mode: e.altKey ? "move" : "rotate" };
-  el3d.setPointerCapture(e.pointerId);
+  setStatus(mode === "move" ? "Grab: move mouse, click to place · Esc cancels"
+                            : "Rotate: move mouse, click to place · Esc cancels");
+}
+function endXform(cancel) {
+  if (!xform) return;
+  if (cancel) restorePose(bottomPose(), xform.snapshot);
+  xform = null;
+  controls3d.enabled = true;
+  setStatus(`Ready · ${APP_VERSION}`);
+  render();
+}
+addEventListener("keydown", (e) => {
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === "g") startXform("move");
+  else if (k === "r") startXform("rotate");
+  else if (k === "escape") endXform(true);
 });
 el3d.addEventListener("pointermove", (e) => {
-  if (!drag3) return;
+  if (!xform) return;
+  if (xform.lastX == null) { xform.lastX = e.clientX; xform.lastY = e.clientY; return; }
+  const dx = e.clientX - xform.lastX, dy = e.clientY - xform.lastY;
+  xform.lastX = e.clientX; xform.lastY = e.clientY;
   const p = bottomPose();
-  const dx = e.clientX - drag3.x, dy = e.clientY - drag3.y;
-  drag3.x = e.clientX; drag3.y = e.clientY;
-  if (drag3.mode === "rotate") { p.ry += dx * 0.01; p.rx += dy * 0.01; }
+  if (xform.mode === "rotate") { p.ry += dx * 0.01; p.rx += dy * 0.01; }
   else { const s = Math.max(hw, hd) * 0.01; p.tx += dx * s; p.tz += dy * s; }
   render();
 });
-el3d.addEventListener("pointerup", (e) => {
-  if (!drag3) return;
-  drag3 = null; controls3d.enabled = true;
-  try { el3d.releasePointerCapture(e.pointerId); } catch {}
+el3d.addEventListener("pointerdown", (e) => {
+  if (xform) { e.stopPropagation(); endXform(false); }  // click confirms
+});
+
+// reset the bottom model to original position/orientation
+const resetModelBtn = document.getElementById("resetModelBtn");
+if (resetModelBtn) resetModelBtn.addEventListener("click", () => {
+  const p = bottomPose();
+  p.rx = p.ry = p.rz = 0; p.tx = p.tz = 0; p.scale = 1;
+  render();
 });
 
 // ---------------------------------------------------------------- reference image
@@ -447,7 +474,7 @@ for (const el of document.querySelectorAll("input[name=linkmode]")) {
     const btn = document.getElementById("makeRealBtn");
     if (btn) btn.style.display = state.linked ? "none" : "inline-block";
     const h3 = document.getElementById("hint3d");
-    if (h3) h3.textContent = state.linked ? "· orbit to inspect (mirrors the top)" : "· orbit · shift-drag to pose";
+    if (h3) h3.textContent = state.linked ? "· orbit · G move · R rotate (mirrors top)" : "· orbit · G move · R rotate";
     render();
   });
 }
