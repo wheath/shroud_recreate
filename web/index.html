@@ -28,7 +28,7 @@
   .pane { background:var(--bg); display:flex; flex-direction:column; min-height:0; min-width:0; }
   .pane > .cap { font-size:11px; color:var(--ink-dim); padding:7px 11px;
     border-bottom:1px solid var(--line); background:var(--panel);
-    display:flex; justify-content:space-between; align-items:center; }
+    display:flex; justify-content:space-between; align-items:center; gap:10px; }
   .cap .hint { color:#666c78; }
   .stage { flex:1; position:relative; min-height:0; display:flex; align-items:center;
     justify-content:center; overflow:hidden; }
@@ -118,7 +118,7 @@
           <label style="cursor:pointer;"><input type="radio" name="linkmode" value="linked" checked style="vertical-align:middle;" /> linked</label>
           <label style="cursor:pointer;"><input type="radio" name="linkmode" value="independent" style="vertical-align:middle;" /> independent</label>
           <button class="btn" id="makeRealBtn" style="display:none;">make bottom the real pose</button>
-          <span>· plain-drag orbit · shift-drag pose</span>
+          <span id="hint3d">· orbit to inspect (mirrors the top)</span>
         </span>
       </div>
       <div class="stage"><canvas id="view3d" class="gl"></canvas></div>
