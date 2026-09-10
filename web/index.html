@@ -117,13 +117,17 @@
           <label class="radio"><input type="radio" name="shading" value="nonphong" /> <span>Non-Phong shading <small>(flat / faceted)</small></span></label>
           <label class="radio"><input type="radio" name="shading" value="bare" /> <span>Bare polygons <small>(wireframe)</small></span></label>
         </div>
-        <p class="helpline">How the model's surface is drawn. Shading applies to the model view; the cloth projects distance regardless.</p>
+        <p class="helpline">How the model's surface is drawn, for the model view. The cloth projection has its own modes below.</p>
       </div>
 
       <div class="group">
         <h2>Cloth plane</h2>
         <div class="row"><label for="planeHeight">Height</label></div>
         <input id="planeHeight" type="range" min="0.2" max="2.5" step="0.01" value="1.4" />
+        <div style="margin-top:12px;" class="radios">
+          <label class="radio"><input type="radio" name="projmode" value="faithful" checked /> <span>Faithful <small>(distance)</small></span></label>
+          <label class="radio"><input type="radio" name="projmode" value="shortcut" /> <span>Shading shortcut <small>(Phong light &mdash; the &ldquo;lit bust&rdquo;)</small></span></label>
+        </div>
         <div class="row" style="margin-top:12px;">
           <label>Near tone</label><input type="number" id="nearVal" min="0" max="1" step="0.01" value="1.00" />
         </div>
@@ -132,7 +136,7 @@
         </div>
         <label class="chk" style="margin-top:8px;"><input type="checkbox" id="useSampled" /> Use sampled Shroud grays (faint band)</label>
         <div style="margin-top:8px;"><button class="btn" id="normalizeBtn">Reset to normalized (0&ndash;1)</button></div>
-        <p class="helpline">Distance &rarr; gray, mapped into [far &hellip; near]. Normalized 0&ndash;1 is the deliberately <em>wrong</em>, high-contrast way. Sampled grays give the faint, whispering band.</p>
+        <p class="helpline">Gray from distance (faithful) or from surface angle to an overhead light (shortcut). Both smooth. Mapped into [far &hellip; near]; normalized 0&ndash;1 is the deliberately <em>wrong</em>, high-contrast way.</p>
       </div>
 
       <div class="spacer"></div>
