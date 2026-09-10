@@ -2,8 +2,10 @@
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
 // Layer model:
-//   3D model  — geometry + a SHADING type (phong=smooth / nonphong=faceted /
-//               bare=wireframe). Vertices are welded on load so smooth Phong works.
+//   3D model  — geometry + a SHADING type (phong=smooth / flat=faceted /
+//               bare=wireframe) and a MESH DETAIL picker. Smoothness comes from
+//               mesh detail (more polygons), not the shading model — low-poly
+//               meshes look faceted even with smooth shading.
 //   Cloth plane — OWNS the 2D projection. Faithful (distance) vs Shortcut (Phong
 //               light). Near/far grays + sampled band. Capture frame static or
 //               move-with-model. Mouse wheel scales the model in the 2D view.
@@ -16,7 +18,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
-const MODEL_URL = "../third_party/moraes/body_3d_dec5000.obj";
+const MODEL_URL = "../third_party/moraes/body_3d_dec10000.obj";
 
 // Faithful faint band, derived from the field-notes book (Appendix A):
 //   I' = f_bg + I*c*(1-f_bg),  f_bg=0.12, c=0.18  ->  ~0.12 .. 0.28
@@ -42,16 +44,15 @@ const state = {
   mesh3: null,
   planeY: 1.4,
   clothOn: true,
-  shading: "phong",
+  shading: "phong",            // "phong" (smooth) | "flat" (faceted) | "bare" (wireframe)
   activeView: "cloth",
   near: 1.0,
   far: 0.0,
   useSampled: false,
   projMode: "faithful",
-  frameStatic: true,           // capture box: static (body moves through) vs move-with-model
+  frameStatic: true,
 };
 
-// full-model bounds (size/center), filled on load — used to size the planes
 const MODEL = { size: new THREE.Vector3(1,1,1), center: new THREE.Vector3(0,0,0) };
 
 // ---------------------------------------------------------------- viewports
@@ -92,14 +93,12 @@ const projBox = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(
 const boxHelper = new THREE.Box3Helper(projBox, 0x5a8fb0); scene.add(boxHelper);
 
 function rebuildSceneHelpers() {
-  // planes generously overhang the WHOLE body footprint
   const bodyW = MODEL.size.x * 1.4, bodyD = MODEL.size.z * 1.4;
   const bcx = MODEL.center.x, bcz = MODEL.center.z;
   planeMesh.geometry.dispose(); planeMesh.geometry = new THREE.PlaneGeometry(bodyW, bodyD);
   planeMesh.position.set(bcx, state.planeY, bcz);
   planeEdge.geometry.dispose(); planeEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
   planeEdge.position.set(bcx, state.planeY, bcz);
-  // capture box frames the head/neck (what the 2D projection shows)
   projBox.min.set(HEAD.x[0], HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0]);
   projBox.max.set(HEAD.x[1], state.planeY, HEAD.z[1]);
   boxHelper.box.copy(projBox);
@@ -110,10 +109,6 @@ function rebuildSceneHelpers() {
 }
 
 // ---------------------------------------------------------------- projection shaders
-// FAITHFUL (distance): per-vertex distance to the plane, smoothly interpolated,
-//   mapped into [far..near]. SHORTCUT (phong light): overhead Lambert (angle, not
-//   distance) — the "lit bust". Kept to compare.
-
 const distMatFaithful = new THREE.ShaderMaterial({
   uniforms: {
     planeY: { value: 1.4 }, yMin: { value: 0 }, yMax: { value: 1 },
@@ -179,51 +174,63 @@ function syncProjUniforms() {
 let projYMin = 0, projYMax = 1;
 
 // model display materials by shading type
-//   phong=smooth (welded normals), nonphong=faceted (flatShading), bare=wireframe
-const matPhong    = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.75, metalness: 0.0, flatShading: false });
-const matNonPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.5, metalness: 0.0, flatShading: true });
-const matBare     = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, wireframe: true });
+//   phong = smooth (welded + smooth normals); flat = faceted (flatShading); bare = wireframe
+const matPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.75, metalness: 0.0, flatShading: false });
+const matFlat  = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.5, metalness: 0.0, flatShading: true });
+const matBare  = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, wireframe: true });
 function shadingMaterial() {
-  return state.shading === "nonphong" ? matNonPhong
-       : state.shading === "bare"     ? matBare
+  return state.shading === "flat" ? matFlat
+       : state.shading === "bare" ? matBare
        : matPhong;
 }
 
+const MESH_URLS = {
+  "1000": "../third_party/moraes/body_3d_dec1000.obj",
+  "2000": "../third_party/moraes/body_3d_dec2000.obj",
+  "5000": "../third_party/moraes/body_3d_dec5000.obj",
+  "10000": "../third_party/moraes/body_3d_dec10000.obj",
+  "full": "../third_party/moraes/body_3d_ORIGINAL_full.obj",
+};
+
 let headLocal = null;
 
-// ---------------------------------------------------------------- load model
-setStatus("Loading model…");
-new OBJLoader().load(
-  MODEL_URL,
-  (obj) => {
-    let geo = null;
-    obj.traverse((c) => { if (c.isMesh && !geo) geo = c.geometry; });
-    if (!geo) { setStatus("No mesh found in model file.", true); return; }
-    // Weld coincident vertices → shared index → averaged (smooth) normals.
-    // Decimated OBJ is typically non-indexed, so computeVertexNormals() would give
-    // per-face (faceted) normals; merging first is what lets Phong be truly smooth.
-    try { geo = mergeVertices(geo); } catch (e) { console.warn("mergeVertices failed", e); }
-    geo.computeVertexNormals();
-    state.mesh3 = new THREE.Mesh(geo, shadingMaterial());
-    scene.add(state.mesh3);
+function loadModel(url) {
+  setStatus("Loading model…");
+  new OBJLoader().load(
+    url,
+    (obj) => {
+      let geo = null;
+      obj.traverse((c) => { if (c.isMesh && !geo) geo = c.geometry; });
+      if (!geo) { setStatus("No mesh found in model file.", true); return; }
+      try { geo = mergeVertices(geo); } catch (e) { console.warn("mergeVertices failed", e); }
+      geo.computeVertexNormals();
+      if (state.mesh3) { scene.remove(state.mesh3); }
+      state.mesh3 = new THREE.Mesh(geo, shadingMaterial());
+      scene.add(state.mesh3);
 
-    HEAD = deriveHeadRegion(geo);
-    recomputeHeadDerived();
-    const fbb = new THREE.Box3().setFromObject(state.mesh3);
-    fbb.getSize(MODEL.size); fbb.getCenter(MODEL.center);
-    state.planeY = HEAD.y[1] + (hw + hd) * 0.25;
-    rebuildSceneHelpers();
-    headLocal = collectHeadVerts(geo);
+      HEAD = deriveHeadRegion(geo);
+      recomputeHeadDerived();
+      const fbb = new THREE.Box3().setFromObject(state.mesh3);
+      fbb.getSize(MODEL.size); fbb.getCenter(MODEL.center);
+      state.planeY = HEAD.y[1] + (hw + hd) * 0.25;
+      rebuildSceneHelpers();
+      headLocal = collectHeadVerts(geo);
 
-    frame3dCamera();
-    positionTopDownCamera();
-    syncProjUniforms();
-    render();
-    setStatus(`Ready · ${geo.getAttribute("position").count.toLocaleString()} verts`);
-  },
-  (xhr) => setStatus(`Loading model… ${((xhr.loaded / (xhr.total || xhr.loaded)) * 100) | 0}%`),
-  (err) => { console.error(err); setStatus("Model failed to load — is third_party/moraes/ served?", true); }
-);
+      frame3dCamera();
+      positionTopDownCamera();
+      syncProjUniforms();
+      render();
+      setStatus(`Ready · ${geo.getAttribute("position").count.toLocaleString()} verts`);
+    },
+    (xhr) => setStatus(`Loading model… ${((xhr.loaded / (xhr.total || xhr.loaded)) * 100) | 0}%`),
+    (err) => { console.error(err); setStatus("Model failed to load — is third_party/moraes/ served?", true); }
+  );
+}
+loadModel(MODEL_URL);
+
+// mesh-detail picker
+const meshResSel = document.getElementById("meshRes");
+if (meshResSel) meshResSel.addEventListener("change", () => { loadModel(MESH_URLS[meshResSel.value] || MODEL_URL); });
 
 function collectHeadVerts(geo) {
   const p = geo.getAttribute("position"); const out = [];
@@ -268,7 +275,6 @@ function applyPose() {
   state.mesh3.position.set(pose.tx, 0, pose.tz);
   state.mesh3.scale.setScalar(pose.scale);
   state.mesh3.updateMatrixWorld();
-  // capture box: static (fixed at head region) or follows the model's translation
   const ox = state.frameStatic ? 0 : pose.tx;
   const oz = state.frameStatic ? 0 : pose.tz;
   projBox.min.set(HEAD.x[0] + ox, HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0] + oz);
@@ -278,11 +284,9 @@ function applyPose() {
 function updateProjNormalization() {
   if (!state.mesh3) return;
   if (state.frameStatic) {
-    // Static: the fixed capture box defines the distance span; model slides through.
     projYMin = projBox.min.y;
     projYMax = projBox.max.y;
   } else {
-    // Follow: span tracks the model's head verts in world space.
     if (!headLocal) return;
     const m = state.mesh3.matrixWorld; const v = new THREE.Vector3();
     let mn=1e9, mx=-1e9;
@@ -315,7 +319,6 @@ el2d.addEventListener("pointermove", (e) => {
   render();
 });
 el2d.addEventListener("pointerup", (e) => { drag = null; try { el2d.releasePointerCapture(e.pointerId); } catch {} });
-// mouse wheel = scale the model in the 2D authority view
 el2d.addEventListener("wheel", (e) => {
   e.preventDefault();
   const factor = Math.exp(-e.deltaY * 0.0012);
@@ -336,7 +339,7 @@ refImg.addEventListener("error", refFallback);
 refWrap.addEventListener("click", ()=>refFile.click());
 refFile.addEventListener("change",(e)=>{ const f=e.target.files&&e.target.files[0]; if(!f)return; showRef(URL.createObjectURL(f)); });
 
-// ---------------------------------------------------------------- controls: plane height + cloth props
+// ---------------------------------------------------------------- controls
 planeSlider.addEventListener("input", () => {
   state.planeY = parseFloat(planeSlider.value);
   planeMesh.position.y = state.planeY; planeEdge.position.y = state.planeY;
@@ -352,17 +355,14 @@ if (farInput) farInput.addEventListener("input", () => { state.far = clamp01(par
 if (sampledToggle) sampledToggle.addEventListener("change", () => { state.useSampled = sampledToggle.checked; syncProjUniforms(); render(); });
 if (normalizeBtn) normalizeBtn.addEventListener("click", () => { state.useSampled=false; if(sampledToggle)sampledToggle.checked=false; state.near=1; state.far=0; syncProjUniforms(); render(); });
 
-// projection mode: faithful (distance) vs shortcut (phong light)
 for (const el of document.querySelectorAll("input[name=projmode]")) {
   el.addEventListener("change", () => { if (el.checked) { state.projMode = el.value; render(); } });
 }
-// capture-frame behavior: static (body moves through a fixed box) vs move-with-model
 for (const el of document.querySelectorAll("input[name=framemode]")) {
   el.addEventListener("change", () => { if (el.checked) { state.frameStatic = (el.value === "static"); render(); } });
 }
 function clamp01(x){ return Math.max(0, Math.min(1, isNaN(x)?0:x)); }
 
-// shading radio (3D model layer)
 for (const el of document.querySelectorAll("input[name=shading]")) {
   el.addEventListener("change", () => { if (el.checked) { state.shading = el.value; if (state.mesh3) state.mesh3.material = shadingMaterial(); render(); } });
 }
@@ -385,7 +385,7 @@ function setSectionEnabled(key, enabled) {
   const sec = sectionFor(key);
   if (!sec) return;
   sec.classList.toggle("section-disabled", !enabled);
-  for (const inp of sec.querySelectorAll("input,button")) inp.disabled = !enabled;
+  for (const inp of sec.querySelectorAll("input,button,select")) inp.disabled = !enabled;
 }
 
 function setActiveView(which) {
@@ -422,7 +422,6 @@ highlightActiveSection("cloth");
 function frame3dCamera() {
   if (!state.mesh3) return;
   const bb = new THREE.Box3().setFromObject(state.mesh3);
-  // include the planes and capture box so nothing is cut off
   const pw = planeMesh.geometry.parameters.width, pd = planeMesh.geometry.parameters.height;
   bb.expandByPoint(new THREE.Vector3(planeMesh.position.x - pw/2, state.planeY, planeMesh.position.z - pd/2));
   bb.expandByPoint(new THREE.Vector3(planeMesh.position.x + pw/2, state.planeY, planeMesh.position.z + pd/2));
@@ -457,8 +456,6 @@ function positionTopDownCamera() {
   const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
   cam.left = -half * aspect; cam.right = half * aspect;
   cam.top = half; cam.bottom = -half;
-  // static: camera fixed on the head-region box (model slides through).
-  // follow: camera tracks the model's translation so the same body part stays framed.
   const ox = state.frameStatic ? 0 : pose.tx;
   const oz = state.frameStatic ? 0 : pose.tz;
   cam.position.set(hcx + ox, HEAD.y[1] + Math.max(hw, hd) * 4, hcz + oz);
