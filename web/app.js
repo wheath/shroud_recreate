@@ -1,12 +1,13 @@
 // shroud_recreate — MVP web app
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Two horizontal planes: the CLOTH plane (top, where the image forms) and the
-// CLIPPING plane (bottom/floor). Both snug to the body footprint.
-// Cloth plane owns the 2D projection: Faithful (distance) vs Shortcut (Phong
-// light). Model shading: phong / flat / bare, plus a mesh-detail picker (smoothness
-// comes from mesh detail, not shading). Capture frame static or move-with-model;
-// mouse wheel scales the model in the 2D view.
+// Two horizontal planes: CLOTH (top, forms the image) + CLIPPING (bottom/floor).
+// Cloth plane owns the 2D projection: Faithful (distance) vs Shortcut (Phong light).
+// Model shading: phong / flat / bare + mesh-detail picker.
+// Capture frame:
+//   Static  — a fixed window; plain-drag SLIDES the body under it, shift rotates.
+//   Follow  — window tracks the model; plain-drag ROTATES, shift moves.
+// Mouse wheel scales the model in the 2D view.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -46,7 +47,7 @@ const state = {
   useSampled: false,
   projMode: "faithful",
   frameStatic: true,
-  clipY: -1,                   // clipping plane height (below body), set on load
+  clipY: -1,
 };
 
 const MODEL = { size: new THREE.Vector3(1,1,1), center: new THREE.Vector3(0,0,0) };
@@ -87,7 +88,7 @@ const planeEdge = new THREE.LineSegments(
 );
 planeEdge.rotation.x = -Math.PI / 2; scene.add(planeEdge);
 
-// clipping plane (floor) — cuts back/far geometry, sits below the body
+// clipping plane (floor)
 const clipMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ color: 0x8a6d3b, transparent: true, opacity: 0.12,
@@ -104,21 +105,18 @@ const projBox = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(
 const boxHelper = new THREE.Box3Helper(projBox, 0x5a8fb0); scene.add(boxHelper);
 
 function rebuildSceneHelpers() {
-  // both planes snug to the body footprint (minimal overhang)
   const bodyW = MODEL.size.x * 1.05, bodyD = MODEL.size.z * 1.05;
   const bcx = MODEL.center.x, bcz = MODEL.center.z;
   planeMesh.geometry.dispose(); planeMesh.geometry = new THREE.PlaneGeometry(bodyW, bodyD);
   planeMesh.position.set(bcx, state.planeY, bcz);
   planeEdge.geometry.dispose(); planeEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
   planeEdge.position.set(bcx, state.planeY, bcz);
-  // clipping plane (floor) — just below the body, same footprint
   const clipY = MODEL.center.y - MODEL.size.y / 2 - (hw + hd) * 0.05;
   state.clipY = clipY;
   clipMesh.geometry.dispose(); clipMesh.geometry = new THREE.PlaneGeometry(bodyW, bodyD);
   clipMesh.position.set(bcx, clipY, bcz);
   clipEdge.geometry.dispose(); clipEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
   clipEdge.position.set(bcx, clipY, bcz);
-  // capture box frames the head/neck (what the 2D projection shows)
   projBox.min.set(HEAD.x[0], HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0]);
   projBox.max.set(HEAD.x[1], state.planeY, HEAD.z[1]);
   boxHelper.box.copy(projBox);
@@ -293,6 +291,7 @@ function applyPose() {
   state.mesh3.position.set(pose.tx, 0, pose.tz);
   state.mesh3.scale.setScalar(pose.scale);
   state.mesh3.updateMatrixWorld();
+  // capture box: static → fixed at head region; follow → tracks the model's translation
   const ox = state.frameStatic ? 0 : pose.tx;
   const oz = state.frameStatic ? 0 : pose.tz;
   projBox.min.set(HEAD.x[0] + ox, HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0] + oz);
@@ -314,11 +313,14 @@ function updateProjNormalization() {
   syncProjUniforms();
 }
 
-// drag in 2D view: rotate (plain) / move (shift); wheel = scale
+// drag in 2D view — gesture depends on capture-frame mode (see header)
 let drag = null;
 const el2d = view2d.renderer.domElement;
 el2d.addEventListener("pointerdown", (e) => {
-  drag = { x: e.clientX, y: e.clientY, mode: e.shiftKey ? "move" : "rotate" };
+  let mode;
+  if (state.frameStatic) mode = e.shiftKey ? "rotate" : "move";  // static: drag slides body
+  else                   mode = e.shiftKey ? "move" : "rotate";  // follow: drag rotates
+  drag = { x: e.clientX, y: e.clientY, mode };
   el2d.setPointerCapture(e.pointerId);
 });
 el2d.addEventListener("pointermove", (e) => {
@@ -377,8 +379,15 @@ for (const el of document.querySelectorAll("input[name=projmode]")) {
   el.addEventListener("change", () => { if (el.checked) { state.projMode = el.value; render(); } });
 }
 for (const el of document.querySelectorAll("input[name=framemode]")) {
-  el.addEventListener("change", () => { if (el.checked) { state.frameStatic = (el.value === "static"); render(); } });
+  el.addEventListener("change", () => { if (el.checked) { state.frameStatic = (el.value === "static"); updateDragHint(); render(); } });
 }
+function updateDragHint() {
+  const h = document.getElementById("drag2dHint");
+  if (h) h.textContent = state.frameStatic
+    ? "drag move · shift rotate · scroll zoom"
+    : "drag rotate · shift move · scroll zoom";
+}
+updateDragHint();
 function clamp01(x){ return Math.max(0, Math.min(1, isNaN(x)?0:x)); }
 
 for (const el of document.querySelectorAll("input[name=shading]")) {
@@ -476,6 +485,8 @@ function positionTopDownCamera() {
   const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
   cam.left = -half * aspect; cam.right = half * aspect;
   cam.top = half; cam.bottom = -half;
+  // static: camera fixed on the head-region box (model slides through).
+  // follow: camera tracks the model's translation.
   const ox = state.frameStatic ? 0 : pose.tx;
   const oz = state.frameStatic ? 0 : pose.tz;
   cam.position.set(hcx + ox, HEAD.y[1] + Math.max(hw, hd) * 4, hcz + oz);
@@ -493,7 +504,7 @@ function render() {
   const showProjection = state.clothOn && state.activeView === "cloth" && state.mesh3;
   const helpers = [planeMesh, planeEdge, clipMesh, clipEdge, boxHelper];
   const vis = helpers.map(h => h.visible);
-  helpers.forEach(h => h.visible = false);        // never show helpers in the 2D output
+  helpers.forEach(h => h.visible = false);
   if (showProjection) {
     updateProjNormalization();
     const savedMat = state.mesh3.material;
@@ -505,7 +516,7 @@ function render() {
     view2d.renderer.setClearColor(0x14161a, 1);
     view2d.renderer.render(scene, view2d.camera);
   }
-  helpers.forEach((h, i) => h.visible = vis[i]);  // restore for the 3D view
+  helpers.forEach((h, i) => h.visible = vis[i]);
 }
 
 function animate() { requestAnimationFrame(animate); controls3d.update(); view3d.renderer.render(scene, view3d.camera); }
