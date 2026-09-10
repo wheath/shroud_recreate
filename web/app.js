@@ -3,11 +3,10 @@
 //
 // Layer model:
 //   3D model  — geometry + a SHADING type (phong=smooth / nonphong=faceted /
-//               bare=wireframe), for the model inspect view.
+//               bare=wireframe). Vertices are welded on load so smooth Phong works.
 //   Cloth plane — OWNS the 2D projection. Faithful (distance) vs Shortcut (Phong
-//               light) modes to compare. Near/far grays + sampled band apply to both.
-//   Capture frame — static (body moves through a fixed region) or move-with-model.
-//   Mouse wheel scales the model in the 2D authority view.
+//               light). Near/far grays + sampled band. Capture frame static or
+//               move-with-model. Mouse wheel scales the model in the 2D view.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -15,6 +14,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
+import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
 const MODEL_URL = "../third_party/moraes/body_3d_dec5000.obj";
 
@@ -92,8 +92,8 @@ const projBox = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(
 const boxHelper = new THREE.Box3Helper(projBox, 0x5a8fb0); scene.add(boxHelper);
 
 function rebuildSceneHelpers() {
-  // planes span the WHOLE body footprint (not just the head)
-  const bodyW = MODEL.size.x * 1.15, bodyD = MODEL.size.z * 1.15;
+  // planes generously overhang the WHOLE body footprint
+  const bodyW = MODEL.size.x * 1.4, bodyD = MODEL.size.z * 1.4;
   const bcx = MODEL.center.x, bcz = MODEL.center.z;
   planeMesh.geometry.dispose(); planeMesh.geometry = new THREE.PlaneGeometry(bodyW, bodyD);
   planeMesh.position.set(bcx, state.planeY, bcz);
@@ -110,10 +110,9 @@ function rebuildSceneHelpers() {
 }
 
 // ---------------------------------------------------------------- projection shaders
-// FAITHFUL (distance): tone = per-vertex distance to the plane, smoothly
-//   interpolated (no facets), mapped into [far..near]. "An image made of distance."
-// SHORTCUT (phong light): tone = overhead Phong/Lambert light (surface ANGLE,
-//   not distance) — the documented "lit bust". Kept for comparison.
+// FAITHFUL (distance): per-vertex distance to the plane, smoothly interpolated,
+//   mapped into [far..near]. SHORTCUT (phong light): overhead Lambert (angle, not
+//   distance) — the "lit bust". Kept to compare.
 
 const distMatFaithful = new THREE.ShaderMaterial({
   uniforms: {
@@ -180,7 +179,7 @@ function syncProjUniforms() {
 let projYMin = 0, projYMax = 1;
 
 // model display materials by shading type
-//   phong=smooth (facets hidden), nonphong=faceted (facets visible), bare=wireframe
+//   phong=smooth (welded normals), nonphong=faceted (flatShading), bare=wireframe
 const matPhong    = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.75, metalness: 0.0, flatShading: false });
 const matNonPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.5, metalness: 0.0, flatShading: true });
 const matBare     = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, wireframe: true });
@@ -200,6 +199,10 @@ new OBJLoader().load(
     let geo = null;
     obj.traverse((c) => { if (c.isMesh && !geo) geo = c.geometry; });
     if (!geo) { setStatus("No mesh found in model file.", true); return; }
+    // Weld coincident vertices → shared index → averaged (smooth) normals.
+    // Decimated OBJ is typically non-indexed, so computeVertexNormals() would give
+    // per-face (faceted) normals; merging first is what lets Phong be truly smooth.
+    try { geo = mergeVertices(geo); } catch (e) { console.warn("mergeVertices failed", e); }
     geo.computeVertexNormals();
     state.mesh3 = new THREE.Mesh(geo, shadingMaterial());
     scene.add(state.mesh3);
@@ -273,11 +276,19 @@ function applyPose() {
   boxHelper.box.copy(projBox);
 }
 function updateProjNormalization() {
-  if (!headLocal || !state.mesh3) return;
-  const m = state.mesh3.matrixWorld; const v = new THREE.Vector3();
-  let mn=1e9, mx=-1e9;
-  for (let i=0;i<headLocal.length;i+=3){ v.set(headLocal[i],headLocal[i+1],headLocal[i+2]).applyMatrix4(m); if(v.y<mn)mn=v.y; if(v.y>mx)mx=v.y; }
-  projYMin = mn; projYMax = mx;
+  if (!state.mesh3) return;
+  if (state.frameStatic) {
+    // Static: the fixed capture box defines the distance span; model slides through.
+    projYMin = projBox.min.y;
+    projYMax = projBox.max.y;
+  } else {
+    // Follow: span tracks the model's head verts in world space.
+    if (!headLocal) return;
+    const m = state.mesh3.matrixWorld; const v = new THREE.Vector3();
+    let mn=1e9, mx=-1e9;
+    for (let i=0;i<headLocal.length;i+=3){ v.set(headLocal[i],headLocal[i+1],headLocal[i+2]).applyMatrix4(m); if(v.y<mn)mn=v.y; if(v.y>mx)mx=v.y; }
+    projYMin = mn; projYMax = mx;
+  }
   syncProjUniforms();
 }
 
@@ -411,6 +422,11 @@ highlightActiveSection("cloth");
 function frame3dCamera() {
   if (!state.mesh3) return;
   const bb = new THREE.Box3().setFromObject(state.mesh3);
+  // include the planes and capture box so nothing is cut off
+  const pw = planeMesh.geometry.parameters.width, pd = planeMesh.geometry.parameters.height;
+  bb.expandByPoint(new THREE.Vector3(planeMesh.position.x - pw/2, state.planeY, planeMesh.position.z - pd/2));
+  bb.expandByPoint(new THREE.Vector3(planeMesh.position.x + pw/2, state.planeY, planeMesh.position.z + pd/2));
+  bb.union(projBox);
   const size = bb.getSize(new THREE.Vector3());
   const center = bb.getCenter(new THREE.Vector3());
   const c = view3d.renderer.domElement;
@@ -418,16 +434,15 @@ function frame3dCamera() {
   const cam = view3d.camera;
   cam.aspect = aspect;
   const vFov = 45 * Math.PI / 180;
-  // Long horizontal axis = body length (runs across the width); other horizontal = depth.
   const lengthAlongX = size.x >= size.z;
   const lengthSpan = lengthAlongX ? size.x : size.z;
   const heightSpan = size.y;
   const fit = Math.max(lengthSpan / aspect, heightSpan);
-  const dist = (fit * 0.5) / Math.tan(vFov / 2) * 1.08;
+  const dist = (fit * 0.5) / Math.tan(vFov / 2) * 1.15;
   if (lengthAlongX) {
-    cam.position.set(center.x, center.y + dist * 0.18, center.z + dist);
+    cam.position.set(center.x, center.y + dist * 0.22, center.z + dist);
   } else {
-    cam.position.set(center.x + dist, center.y + dist * 0.18, center.z);
+    cam.position.set(center.x + dist, center.y + dist * 0.22, center.z);
   }
   cam.up.set(0, 1, 0);
   cam.near = dist * 0.01; cam.far = dist * 10;
@@ -442,15 +457,20 @@ function positionTopDownCamera() {
   const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
   cam.left = -half * aspect; cam.right = half * aspect;
   cam.top = half; cam.bottom = -half;
-  cam.position.set(hcx, HEAD.y[1] + Math.max(hw, hd) * 4, hcz);
+  // static: camera fixed on the head-region box (model slides through).
+  // follow: camera tracks the model's translation so the same body part stays framed.
+  const ox = state.frameStatic ? 0 : pose.tx;
+  const oz = state.frameStatic ? 0 : pose.tz;
+  cam.position.set(hcx + ox, HEAD.y[1] + Math.max(hw, hd) * 4, hcz + oz);
   cam.up.set(0, 0, -1);
-  cam.lookAt(hcx, HEAD.y[0], hcz);
+  cam.lookAt(hcx + ox, HEAD.y[0], hcz + oz);
   cam.updateProjectionMatrix();
 }
 positionTopDownCamera();
 
 function render() {
   applyPose();
+  positionTopDownCamera();
   view3d.renderer.render(scene, view3d.camera);
 
   const showProjection = state.clothOn && state.activeView === "cloth" && state.mesh3;
