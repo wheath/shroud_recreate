@@ -1,25 +1,26 @@
-// shroud_recreate — MVP web app  ·  v0.1.2
+// shroud_recreate — MVP web app  ·  v0.1.3
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Bottom 3D view (Blender-style):
-//   plain-drag = orbit camera (navigate; nothing in the scene moves)
-//   press G then move mouse = grab/move the model; press R then move = rotate
-//   click confirms, Esc cancels; "reset model position" snaps back
-//   the model transforms in world space while planes + capture box stay fixed
+// Bottom 3D view — two ways to transform the model (planes + capture box stay put):
+//   GIZMO (Unity-style): drag colored arrows (move) / rings (rotate). Toggle
+//     move/rotate with W / E or the "gizmo:" button.
+//   KEYBOARD (Blender-style): G (move) or R (rotate), move mouse, X/Y/Z locks an
+//     axis; click confirms, Esc cancels.
+//   plain-drag (no handle) = orbit camera. "reset model position" snaps back.
 //
 // Two poses: pose = AUTHORITATIVE (top 2D + projection); poseB = bottom pose
-// (independent mode). Capture box: static (fixed) or move-with-model (rides pose).
-// Cloth plane owns the projection: Faithful (distance) vs Shortcut (Phong light).
+// (independent). Capture box static (fixed) or move-with-model (rides pose).
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
-const APP_VERSION = "v0.1.2";
+const APP_VERSION = "v0.1.3";
 console.log("shroud_recreate " + APP_VERSION);
 { const vEl = document.getElementById("version"); if (vEl) vEl.textContent = APP_VERSION; }
 
@@ -81,6 +82,20 @@ scene.background = new THREE.Color(0x14161a);
 scene.add(new THREE.HemisphereLight(0xbfc7d2, 0x1a1a1f, 0.9));
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.9); keyLight.position.set(3, 6, 5); scene.add(keyLight);
 const fillLight = new THREE.DirectionalLight(0x88a0c0, 0.35); fillLight.position.set(-4, 2, -5); scene.add(fillLight);
+
+// Unity-style gizmo (arrows move, rings rotate). Attached to the model on load;
+// drags write back into the bottom pose. Suspends OrbitControls while dragging.
+const gizmo = new TransformControls(view3d.camera, view3d.renderer.domElement);
+gizmo.setMode("translate");
+gizmo.setSpace("world");
+let gizmoDragging = false;
+scene.add(gizmo);
+gizmo.addEventListener("dragging-changed", (e) => {
+  gizmoDragging = e.value;
+  controls3d.enabled = !e.value;
+  if (!e.value) syncPoseFromMesh();
+});
+gizmo.addEventListener("objectChange", () => { syncPoseFromMesh(); render(); });
 
 const planeMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
@@ -239,6 +254,7 @@ function loadModel(url) {
       if (state.mesh3) { scene.remove(state.mesh3); }
       state.mesh3 = new THREE.Mesh(geo, shadingMaterial());
       scene.add(state.mesh3);
+      gizmo.attach(state.mesh3);
 
       HEAD = deriveHeadRegion(geo);
       recomputeHeadDerived();
@@ -299,16 +315,23 @@ function deriveHeadRegion(geo) {
 }
 
 // ---------------------------------------------------------------- poses
-const pose  = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
-const poseB = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
+const pose  = { rx: 0, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0, scale: 1 };
+const poseB = { rx: 0, ry: 0, rz: 0, tx: 0, ty: 0, tz: 0, scale: 1 };
 function bottomPose() { return state.linked ? pose : poseB; }
 
 function applyPoseObj(p) {
   if (!state.mesh3) return;
   state.mesh3.rotation.set(p.rx, p.ry, p.rz);
-  state.mesh3.position.set(p.tx, 0, p.tz);
+  state.mesh3.position.set(p.tx, p.ty || 0, p.tz);
   state.mesh3.scale.setScalar(p.scale);
   state.mesh3.updateMatrixWorld();
+}
+// Read the mesh's current transform (set by the gizmo) back into the bottom pose.
+function syncPoseFromMesh() {
+  if (!state.mesh3) return;
+  const p = bottomPose();
+  p.rx = state.mesh3.rotation.x; p.ry = state.mesh3.rotation.y; p.rz = state.mesh3.rotation.z;
+  p.tx = state.mesh3.position.x; p.ty = state.mesh3.position.y; p.tz = state.mesh3.position.z;
 }
 function applyPose() {
   applyPoseObj(pose);
@@ -318,7 +341,7 @@ function applyPose() {
   } else {
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(pose.rx, pose.ry, pose.rz));
     const c = capCenter.clone().applyQuaternion(q);
-    c.x += pose.tx; c.z += pose.tz;
+    c.x += pose.tx; c.y += (pose.ty || 0); c.z += pose.tz;
     captureBox.position.copy(c);
     captureBox.quaternion.copy(q);
   }
@@ -371,23 +394,23 @@ el2d.addEventListener("wheel", (e) => {
   render();
 }, { passive: false });
 
-// ---- bottom 3D view: Blender-style transforms ----
-// Plain-drag = orbit camera (OrbitControls). Press G then move = grab/move the
-// model; press R then move = rotate. Click confirms, Esc cancels. The model
-// transforms in world space while planes + capture box stay fixed.
-let xform = null;
+// ---- bottom 3D view: gizmo (mouse) + G/R keyboard with X/Y/Z axis lock ----
+let xform = null;   // { mode, axis, lastX, lastY, snapshot }
 const el3d = view3d.renderer.domElement;
 
-function snapshotPose(p) { return { rx:p.rx, ry:p.ry, rz:p.rz, tx:p.tx, tz:p.tz, scale:p.scale }; }
-function restorePose(p, s) { p.rx=s.rx; p.ry=s.ry; p.rz=s.rz; p.tx=s.tx; p.tz=s.tz; p.scale=s.scale; }
+function snapshotPose(p) { return { rx:p.rx, ry:p.ry, rz:p.rz, tx:p.tx, ty:p.ty, tz:p.tz, scale:p.scale }; }
+function restorePose(p, s) { p.rx=s.rx; p.ry=s.ry; p.rz=s.rz; p.tx=s.tx; p.ty=s.ty; p.tz=s.tz; p.scale=s.scale; }
 
 function startXform(mode) {
   if (!state.mesh3) return;
-  const p = bottomPose();
-  xform = { mode, lastX: null, lastY: null, snapshot: snapshotPose(p) };
+  xform = { mode, axis: null, lastX: null, lastY: null, snapshot: snapshotPose(bottomPose()) };
   controls3d.enabled = false;
-  setStatus(mode === "move" ? "Grab: move mouse, click to place · Esc cancels"
-                            : "Rotate: move mouse, click to place · Esc cancels");
+  updateXformStatus();
+}
+function updateXformStatus() {
+  if (!xform) return;
+  const a = xform.axis ? ` [${xform.axis.toUpperCase()}]` : "";
+  setStatus(`${xform.mode === "move" ? "Grab" : "Rotate"}${a}: move mouse · X/Y/Z axis · click place · Esc cancel`);
 }
 function endXform(cancel) {
   if (!xform) return;
@@ -397,12 +420,31 @@ function endXform(cancel) {
   setStatus(`Ready · ${APP_VERSION}`);
   render();
 }
+
+function setGizmoMode(mode) {
+  gizmo.setMode(mode === "rotate" ? "rotate" : "translate");
+  const btn = document.getElementById("gizmoModeBtn");
+  if (btn) btn.textContent = mode === "rotate" ? "gizmo: rotate" : "gizmo: move";
+}
+const gizmoModeBtn = document.getElementById("gizmoModeBtn");
+if (gizmoModeBtn) gizmoModeBtn.addEventListener("click", () => {
+  setGizmoMode(gizmo.getMode() === "translate" ? "rotate" : "move");
+});
+
 addEventListener("keydown", (e) => {
-  if (e.repeat) return;
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;  // don't hijack typing
   const k = e.key.toLowerCase();
-  if (k === "g") startXform("move");
-  else if (k === "r") startXform("rotate");
-  else if (k === "escape") endXform(true);
+  if (e.repeat && !"xyz".includes(k)) return;
+  if (k === "g") { startXform("move"); }
+  else if (k === "r") { startXform("rotate"); }
+  else if (k === "w") { setGizmoMode("move"); }
+  else if (k === "e") { setGizmoMode("rotate"); }
+  else if (k === "escape") { endXform(true); }
+  else if (xform && (k === "x" || k === "y" || k === "z")) {
+    xform.axis = (xform.axis === k) ? null : k;
+    updateXformStatus();
+  }
 });
 el3d.addEventListener("pointermove", (e) => {
   if (!xform) return;
@@ -410,19 +452,30 @@ el3d.addEventListener("pointermove", (e) => {
   const dx = e.clientX - xform.lastX, dy = e.clientY - xform.lastY;
   xform.lastX = e.clientX; xform.lastY = e.clientY;
   const p = bottomPose();
-  if (xform.mode === "rotate") { p.ry += dx * 0.01; p.rx += dy * 0.01; }
-  else { const s = Math.max(hw, hd) * 0.01; p.tx += dx * s; p.tz += dy * s; }
+  const d = (dx - dy) * 0.5;
+  if (xform.mode === "rotate") {
+    if (xform.axis === "x") p.rx += d * 0.01;
+    else if (xform.axis === "y") p.ry += d * 0.01;
+    else if (xform.axis === "z") p.rz += d * 0.01;
+    else { p.ry += dx * 0.01; p.rx += dy * 0.01; }
+  } else {
+    const s = Math.max(hw, hd) * 0.01;
+    if (xform.axis === "x") p.tx += d * s;
+    else if (xform.axis === "y") p.ty += -d * s;
+    else if (xform.axis === "z") p.tz += d * s;
+    else { p.tx += dx * s; p.tz += dy * s; }
+  }
   render();
 });
 el3d.addEventListener("pointerdown", (e) => {
-  if (xform) { e.stopPropagation(); endXform(false); }  // click confirms
+  if (xform) { e.stopPropagation(); endXform(false); }
 });
 
 // reset the bottom model to original position/orientation
 const resetModelBtn = document.getElementById("resetModelBtn");
 if (resetModelBtn) resetModelBtn.addEventListener("click", () => {
   const p = bottomPose();
-  p.rx = p.ry = p.rz = 0; p.tx = p.tz = 0; p.scale = 1;
+  p.rx = p.ry = p.rz = 0; p.tx = p.ty = p.tz = 0; p.scale = 1;
   render();
 });
 
@@ -474,7 +527,7 @@ for (const el of document.querySelectorAll("input[name=linkmode]")) {
     const btn = document.getElementById("makeRealBtn");
     if (btn) btn.style.display = state.linked ? "none" : "inline-block";
     const h3 = document.getElementById("hint3d");
-    if (h3) h3.textContent = state.linked ? "· orbit · G move · R rotate (mirrors top)" : "· orbit · G move · R rotate";
+    if (h3) h3.textContent = state.linked ? "· drag gizmo · W/E mode · G/R+X/Y/Z (mirrors top)" : "· drag gizmo · W/E mode · G/R+X/Y/Z keys";
     render();
   });
 }
@@ -605,7 +658,7 @@ function render() {
   applyPose();
   positionTopDownCamera();
   const showProjection = state.clothOn && state.activeView === "cloth";
-  const helpers = [planeMesh, planeEdge, clipMesh, clipEdge, captureBox];
+  const helpers = [planeMesh, planeEdge, clipMesh, clipEdge, captureBox, gizmo];
   const vis = helpers.map(h => h.visible);
   helpers.forEach(h => h.visible = false);
   if (showProjection) {
@@ -622,17 +675,17 @@ function render() {
   helpers.forEach((h, i) => h.visible = vis[i]);
 
   // --- BOTTOM 3D inspect view: bottom pose (independent when unlinked) ---
-  applyPoseObj(bottomPose());
+  if (!gizmoDragging) applyPoseObj(bottomPose());
   view3d.renderer.render(scene, view3d.camera);
-  applyPoseObj(pose);   // leave mesh on authoritative pose for next frame's projection
+  if (!gizmoDragging) applyPoseObj(pose);
 }
 
 function animate() {
   requestAnimationFrame(animate);
   controls3d.update();
-  if (state.mesh3) applyPoseObj(bottomPose());
+  if (state.mesh3 && !gizmoDragging) applyPoseObj(bottomPose());
   view3d.renderer.render(scene, view3d.camera);
-  if (state.mesh3) applyPoseObj(pose);   // restore authoritative for projection reads
+  if (state.mesh3 && !gizmoDragging) applyPoseObj(pose);
 }
 animate();
 
