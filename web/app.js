@@ -1,10 +1,10 @@
-// shroud_recreate — MVP web app  ·  v0.1.4
+// shroud_recreate — MVP web app  ·  v0.1.5
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Bottom 3D view: gizmo (W move / E rotate / S scale) + Blender keys (G/R then
-// X/Y/Z to lock an axis). Pivot: presets (center/head/feet/origin) via dropdown,
-// or "pick point…" to click a spot on the model (Blender 3D-cursor). The mesh
-// lives inside a PIVOT GROUP so rotate/scale happen around the chosen pivot.
+// Bottom 3D view: gizmo (dropdown: move/rotate/scale, or W/E/S) + Blender keys
+// (G/R then X/Y/Z to lock an axis). Pivot: presets (center/head/feet/origin) via
+// dropdown, or "pick point…" to click a spot on the model. The mesh lives inside a
+// PIVOT GROUP; changing the pivot preserves the mesh world transform (no jump).
 //
 // Two poses: pose = AUTHORITATIVE (top 2D + projection); poseB = bottom pose
 // (independent). Capture box static (fixed) or move-with-model (rides pose).
@@ -18,7 +18,7 @@ import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
-const APP_VERSION = "v0.1.4";
+const APP_VERSION = "v0.1.5";
 console.log("shroud_recreate " + APP_VERSION);
 { const vEl = document.getElementById("version"); if (vEl) vEl.textContent = APP_VERSION; }
 
@@ -258,7 +258,7 @@ function loadModel(url) {
       if (state.mesh3) { pivot.remove(state.mesh3); }
       state.mesh3 = new THREE.Mesh(geo, shadingMaterial());
       pivot.position.set(0,0,0); pivot.rotation.set(0,0,0); pivot.scale.set(1,1,1);
-      state.mesh3.position.set(0,0,0);
+      state.mesh3.position.set(0,0,0); state.mesh3.rotation.set(0,0,0); state.mesh3.scale.set(1,1,1);
       pivot.add(state.mesh3);
       gizmo.attach(pivot);
 
@@ -328,14 +328,12 @@ function bottomPose() { return state.linked ? pose : poseB; }
 
 function applyPoseObj(p) {
   if (!state.mesh3) return;
-  // Pose is applied to the PIVOT GROUP; the mesh sits offset inside it.
   pivot.rotation.set(p.rx, p.ry, p.rz);
   pivot.position.set(p.tx, p.ty || 0, p.tz);
   if (p.sx != null) pivot.scale.set(p.sx, p.sy, p.sz);
   else pivot.scale.setScalar(p.scale);
   pivot.updateMatrixWorld(true);
 }
-// Read the pivot group's transform (set by the gizmo) back into the bottom pose.
 function syncPoseFromMesh() {
   if (!state.mesh3) return;
   const p = bottomPose();
@@ -345,14 +343,21 @@ function syncPoseFromMesh() {
   p.scale = pivot.scale.x;
 }
 
-// Set the pivot to a LOCAL point on the mesh, preserving the current world pose.
+// Set the pivot to a LOCAL point on the mesh WITHOUT moving the model.
+// Force the mesh's world matrix to be identical before and after; only the group
+// origin (the pivot) relocates.
 function setPivotLocal(localPt) {
   if (!state.mesh3) return;
+  state.mesh3.updateMatrixWorld(true);
+  const savedWorld = state.mesh3.matrixWorld.clone();
+  const worldPivot = localPt.clone().applyMatrix4(savedWorld);
+  pivot.position.copy(worldPivot);
   pivot.updateMatrixWorld(true);
-  const w = localPt.clone().applyMatrix4(pivot.matrixWorld);  // current world pos of that point
-  state.mesh3.position.copy(localPt.clone().multiplyScalar(-1)); // offset mesh so point sits at group origin
-  pivot.position.copy(w);
+  const groupInv = new THREE.Matrix4().copy(pivot.matrixWorld).invert();
+  const meshLocal = groupInv.multiply(savedWorld);
+  meshLocal.decompose(state.mesh3.position, state.mesh3.quaternion, state.mesh3.scale);
   pivotLocal.copy(localPt);
+  state.mesh3.updateMatrixWorld(true);
   syncPoseFromMesh();
   render();
 }
@@ -454,20 +459,15 @@ function endXform(cancel) {
   render();
 }
 
+// gizmo mode: dropdown (move/rotate/scale) + W/E/S keys
 function setGizmoMode(mode) {
   const m = mode === "rotate" ? "rotate" : mode === "scale" ? "scale" : "translate";
   gizmo.setMode(m);
-  const btn = document.getElementById("gizmoModeBtn");
-  if (btn) btn.textContent = m === "rotate" ? "gizmo: rotate" : m === "scale" ? "gizmo: scale" : "gizmo: move";
+  const sel = document.getElementById("gizmoModeSel");
+  if (sel) sel.value = m;
 }
-const GIZMO_CYCLE = ["translate", "rotate", "scale"];
-function cycleGizmoMode() {
-  const i = GIZMO_CYCLE.indexOf(gizmo.getMode());
-  const next = GIZMO_CYCLE[(i + 1) % GIZMO_CYCLE.length];
-  setGizmoMode(next === "translate" ? "move" : next);
-}
-const gizmoModeBtn = document.getElementById("gizmoModeBtn");
-if (gizmoModeBtn) gizmoModeBtn.addEventListener("click", cycleGizmoMode);
+const gizmoModeSel = document.getElementById("gizmoModeSel");
+if (gizmoModeSel) gizmoModeSel.addEventListener("change", () => setGizmoMode(gizmoModeSel.value));
 
 addEventListener("keydown", (e) => {
   const tag = (e.target && e.target.tagName) || "";
