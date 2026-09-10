@@ -109,7 +109,7 @@
     </section>
 
     <section class="pane" id="paneTwoD">
-      <div class="cap"><span>2D · <span id="activeLabel">Cloth · distance projection</span></span><span class="hint">drag rotate · shift-drag move · scroll zoom</span></div>
+      <div class="cap"><span>2D · <span id="activeLabel">Cloth · distance projection</span></span><span class="hint" id="drag2dHint">drag move · shift rotate · scroll zoom</span></div>
       <div class="stage"><canvas id="view2d" class="gl"></canvas></div>
     </section>
 
@@ -150,7 +150,7 @@
         </div>
         <div style="margin-top:12px;" class="radios">
           <div style="font-size:10px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.04em;">Capture frame</div>
-          <label class="radio"><input type="radio" name="framemode" value="static" checked /> <span>Static <small>(body moves through it)</small></span></label>
+          <label class="radio"><input type="radio" name="framemode" value="static" checked /> <span>Static <small>(drag slides body through it)</small></span></label>
           <label class="radio"><input type="radio" name="framemode" value="follow" /> <span>Move with model</span></label>
         </div>
         <div class="row" style="margin-top:12px;">
