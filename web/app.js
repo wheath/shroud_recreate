@@ -1,4 +1,4 @@
-// shroud_recreate — MVP web app
+// shroud_recreate — MVP web app  ·  v0.1.0
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
 // Two views, two poses:
@@ -20,6 +20,10 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+
+const APP_VERSION = "v0.1.0";
+console.log("shroud_recreate " + APP_VERSION);
+{ const vEl = document.getElementById("version"); if (vEl) vEl.textContent = APP_VERSION; }
 
 const MODEL_URL = "../third_party/moraes/body_3d_dec10000.obj";
 
@@ -242,7 +246,7 @@ function loadModel(url) {
       positionTopDownCamera();
       syncProjUniforms();
       render();
-      setStatus(`Ready · ${geo.getAttribute("position").count.toLocaleString()} verts`);
+      setStatus(`Ready · ${APP_VERSION} · ${geo.getAttribute("position").count.toLocaleString()} verts`);
     },
     (xhr) => setStatus(`Loading model… ${((xhr.loaded / (xhr.total || xhr.loaded)) * 100) | 0}%`),
     (err) => { console.error(err); setStatus("Model failed to load — is third_party/moraes/ served?", true); }
@@ -289,7 +293,6 @@ function deriveHeadRegion(geo) {
 }
 
 // ---------------------------------------------------------------- poses
-// pose = AUTHORITATIVE (top 2D + projection); poseB = bottom inspection pose.
 const pose  = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
 const poseB = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
 function bottomPose() { return state.linked ? pose : poseB; }
@@ -361,7 +364,6 @@ el2d.addEventListener("wheel", (e) => {
 let drag3 = null;
 const el3d = view3d.renderer.domElement;
 el3d.addEventListener("pointerdown", (e) => {
-  // In linked mode the bottom is a mirror of the top — never drives the pose.
   if (state.linked || !e.shiftKey || !state.mesh3) return;  // plain drag → orbit
   controls3d.enabled = false;
   drag3 = { x: e.clientX, y: e.clientY, mode: e.altKey ? "move" : "rotate" };
@@ -417,13 +419,12 @@ for (const el of document.querySelectorAll("input[name=projmode]")) {
 for (const el of document.querySelectorAll("input[name=framemode]")) {
   el.addEventListener("change", () => { if (el.checked) { state.frameStatic = (el.value === "static"); updateDragHint(); render(); } });
 }
-// link / independent toggle
 for (const el of document.querySelectorAll("input[name=linkmode]")) {
   el.addEventListener("change", () => {
     if (!el.checked) return;
     const wasLinked = state.linked;
     state.linked = (el.value === "linked");
-    if (wasLinked && !state.linked) Object.assign(poseB, pose);  // seed bottom from current pose
+    if (wasLinked && !state.linked) Object.assign(poseB, pose);
     const btn = document.getElementById("makeRealBtn");
     if (btn) btn.style.display = state.linked ? "none" : "inline-block";
     const h3 = document.getElementById("hint3d");
@@ -431,7 +432,6 @@ for (const el of document.querySelectorAll("input[name=linkmode]")) {
     render();
   });
 }
-// "make bottom the real pose" — copy poseB up to the authoritative pose
 const makeRealBtn = document.getElementById("makeRealBtn");
 if (makeRealBtn) makeRealBtn.addEventListener("click", () => {
   if (!confirm("Make the bottom view's orientation the real pose? This replaces the top 2D orientation that drives the projection.")) return;
