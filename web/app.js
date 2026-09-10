@@ -2,9 +2,9 @@
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
 // Layer model (this pass):
-//   3D model  — geometry + a SHADING type (regular / phong / flat). Shading is a
-//               property of the model; the cloth projects whatever surface the
-//               model presents.
+//   3D model  — geometry + a SHADING type (phong=smooth / nonphong=flat / bare=
+//               wireframe). Shading is a property of the model; the cloth projects
+//               distance regardless of the model's shading.
 //   Cloth plane — OWNS the distance projection. It reads the posed model and maps
 //               distance-to-the-plane into a grayscale band [far .. near]. When the
 //               cloth is OFF, the 2D area just shows the raw shaded model.
@@ -49,7 +49,7 @@ const state = {
   mesh3: null,
   planeY: 1.4,
   clothOn: true,               // cloth plane layer enabled?
-  shading: "regular",          // "regular" | "phong" | "flat"
+  shading: "phong",            // "phong" (smooth) | "nonphong" (flat) | "bare" (wireframe)
   activeView: "cloth",         // which layer's output the 2D area shows: "cloth" | "model"
   near: 1.0,                   // near-plane tone (grayscale)
   far: 0.0,                    // far tone (grayscale) — default = normalized (wrong)
@@ -136,12 +136,17 @@ const distMat = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
 });
 
-// model display materials by shading type
-const matRegular = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.85, metalness: 0.0 });
-const matPhong   = new THREE.MeshPhongMaterial({ color: 0xcfcabb, shininess: 80, specular: 0x333333 });
-const matFlat    = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 1.0, metalness: 0.0, flatShading: true });
+// model display materials by shading type (correctly named)
+//   phong    = smooth normal interpolation (facets hidden) — true Phong shading
+//   nonphong = flat per-face shading (facets visible)
+//   bare     = wireframe (polygon edges only)
+const matPhong    = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.9, metalness: 0.0, flatShading: false });
+const matNonPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.9, metalness: 0.0, flatShading: true });
+const matBare     = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, wireframe: true });
 function shadingMaterial() {
-  return state.shading === "phong" ? matPhong : state.shading === "flat" ? matFlat : matRegular;
+  return state.shading === "nonphong" ? matNonPhong
+       : state.shading === "bare"     ? matBare
+       : matPhong;
 }
 
 let headLocal = null;
