@@ -1,14 +1,12 @@
 // shroud_recreate — MVP web app
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Layer model:
-//   3D model  — geometry + a SHADING type (phong=smooth / flat=faceted /
-//               bare=wireframe) and a MESH DETAIL picker. Smoothness comes from
-//               mesh detail (more polygons), not the shading model — low-poly
-//               meshes look faceted even with smooth shading.
-//   Cloth plane — OWNS the 2D projection. Faithful (distance) vs Shortcut (Phong
-//               light). Near/far grays + sampled band. Capture frame static or
-//               move-with-model. Mouse wheel scales the model in the 2D view.
+// Two horizontal planes: the CLOTH plane (top, where the image forms) and the
+// CLIPPING plane (bottom/floor). Both snug to the body footprint.
+// Cloth plane owns the 2D projection: Faithful (distance) vs Shortcut (Phong
+// light). Model shading: phong / flat / bare, plus a mesh-detail picker (smoothness
+// comes from mesh detail, not shading). Capture frame static or move-with-model;
+// mouse wheel scales the model in the 2D view.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -20,12 +18,9 @@ import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
 const MODEL_URL = "../third_party/moraes/body_3d_dec10000.obj";
 
-// Faithful faint band, derived from the field-notes book (Appendix A):
-//   I' = f_bg + I*c*(1-f_bg),  f_bg=0.12, c=0.18  ->  ~0.12 .. 0.28
 const SAMPLED_FAR = 0.12;
 const SAMPLED_NEAR = 0.28;
 
-// Head region — replaced with values measured from the actual mesh on load.
 let HEAD = {
   x: [-0.2177, 0.2649], y: [-0.2661, 0.2412], z: [-1.3547, -0.7841],
 };
@@ -44,13 +39,14 @@ const state = {
   mesh3: null,
   planeY: 1.4,
   clothOn: true,
-  shading: "phong",            // "phong" (smooth) | "flat" (faceted) | "bare" (wireframe)
+  shading: "phong",
   activeView: "cloth",
   near: 1.0,
   far: 0.0,
   useSampled: false,
   projMode: "faithful",
   frameStatic: true,
+  clipY: -1,                   // clipping plane height (below body), set on load
 };
 
 const MODEL = { size: new THREE.Vector3(1,1,1), center: new THREE.Vector3(0,0,0) };
@@ -78,6 +74,7 @@ scene.add(new THREE.HemisphereLight(0xbfc7d2, 0x1a1a1f, 0.9));
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.9); keyLight.position.set(3, 6, 5); scene.add(keyLight);
 const fillLight = new THREE.DirectionalLight(0x88a0c0, 0.35); fillLight.position.set(-4, 2, -5); scene.add(fillLight);
 
+// cloth plane (top)
 const planeMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ color: 0x3d7bd4, transparent: true, opacity: 0.15,
@@ -89,16 +86,39 @@ const planeEdge = new THREE.LineSegments(
   new THREE.LineBasicMaterial({ color: 0x3d7bd4, transparent: true, opacity: 0.6 })
 );
 planeEdge.rotation.x = -Math.PI / 2; scene.add(planeEdge);
+
+// clipping plane (floor) — cuts back/far geometry, sits below the body
+const clipMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({ color: 0x8a6d3b, transparent: true, opacity: 0.12,
+    side: THREE.DoubleSide, depthWrite: false })
+);
+clipMesh.rotation.x = -Math.PI / 2; scene.add(clipMesh);
+const clipEdge = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)),
+  new THREE.LineBasicMaterial({ color: 0xb08a4a, transparent: true, opacity: 0.5 })
+);
+clipEdge.rotation.x = -Math.PI / 2; scene.add(clipEdge);
+
 const projBox = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
 const boxHelper = new THREE.Box3Helper(projBox, 0x5a8fb0); scene.add(boxHelper);
 
 function rebuildSceneHelpers() {
-  const bodyW = MODEL.size.x * 1.4, bodyD = MODEL.size.z * 1.4;
+  // both planes snug to the body footprint (minimal overhang)
+  const bodyW = MODEL.size.x * 1.05, bodyD = MODEL.size.z * 1.05;
   const bcx = MODEL.center.x, bcz = MODEL.center.z;
   planeMesh.geometry.dispose(); planeMesh.geometry = new THREE.PlaneGeometry(bodyW, bodyD);
   planeMesh.position.set(bcx, state.planeY, bcz);
   planeEdge.geometry.dispose(); planeEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
   planeEdge.position.set(bcx, state.planeY, bcz);
+  // clipping plane (floor) — just below the body, same footprint
+  const clipY = MODEL.center.y - MODEL.size.y / 2 - (hw + hd) * 0.05;
+  state.clipY = clipY;
+  clipMesh.geometry.dispose(); clipMesh.geometry = new THREE.PlaneGeometry(bodyW, bodyD);
+  clipMesh.position.set(bcx, clipY, bcz);
+  clipEdge.geometry.dispose(); clipEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
+  clipEdge.position.set(bcx, clipY, bcz);
+  // capture box frames the head/neck (what the 2D projection shows)
   projBox.min.set(HEAD.x[0], HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0]);
   projBox.max.set(HEAD.x[1], state.planeY, HEAD.z[1]);
   boxHelper.box.copy(projBox);
@@ -174,7 +194,6 @@ function syncProjUniforms() {
 let projYMin = 0, projYMax = 1;
 
 // model display materials by shading type
-//   phong = smooth (welded + smooth normals); flat = faceted (flatShading); bare = wireframe
 const matPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.75, metalness: 0.0, flatShading: false });
 const matFlat  = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.5, metalness: 0.0, flatShading: true });
 const matBare  = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, wireframe: true });
@@ -228,7 +247,6 @@ function loadModel(url) {
 }
 loadModel(MODEL_URL);
 
-// mesh-detail picker
 const meshResSel = document.getElementById("meshRes");
 if (meshResSel) meshResSel.addEventListener("change", () => { loadModel(MESH_URLS[meshResSel.value] || MODEL_URL); });
 
@@ -425,6 +443,8 @@ function frame3dCamera() {
   const pw = planeMesh.geometry.parameters.width, pd = planeMesh.geometry.parameters.height;
   bb.expandByPoint(new THREE.Vector3(planeMesh.position.x - pw/2, state.planeY, planeMesh.position.z - pd/2));
   bb.expandByPoint(new THREE.Vector3(planeMesh.position.x + pw/2, state.planeY, planeMesh.position.z + pd/2));
+  bb.expandByPoint(new THREE.Vector3(clipMesh.position.x - pw/2, state.clipY, clipMesh.position.z - pd/2));
+  bb.expandByPoint(new THREE.Vector3(clipMesh.position.x + pw/2, state.clipY, clipMesh.position.z + pd/2));
   bb.union(projBox);
   const size = bb.getSize(new THREE.Vector3());
   const center = bb.getCenter(new THREE.Vector3());
@@ -471,23 +491,21 @@ function render() {
   view3d.renderer.render(scene, view3d.camera);
 
   const showProjection = state.clothOn && state.activeView === "cloth" && state.mesh3;
+  const helpers = [planeMesh, planeEdge, clipMesh, clipEdge, boxHelper];
+  const vis = helpers.map(h => h.visible);
+  helpers.forEach(h => h.visible = false);        // never show helpers in the 2D output
   if (showProjection) {
     updateProjNormalization();
     const savedMat = state.mesh3.material;
-    const pv = planeMesh.visible, ev = planeEdge.visible, bv = boxHelper.visible;
     state.mesh3.material = projMat();
-    planeMesh.visible = planeEdge.visible = boxHelper.visible = false;
     view2d.renderer.setClearColor(0x000000, 1);
     view2d.renderer.render(scene, view2d.camera);
     state.mesh3.material = savedMat;
-    planeMesh.visible = pv; planeEdge.visible = ev; boxHelper.visible = bv;
   } else {
-    const pv = planeMesh.visible, ev = planeEdge.visible, bv = boxHelper.visible;
-    planeMesh.visible = planeEdge.visible = boxHelper.visible = false;
     view2d.renderer.setClearColor(0x14161a, 1);
     view2d.renderer.render(scene, view2d.camera);
-    planeMesh.visible = pv; planeEdge.visible = ev; boxHelper.visible = bv;
   }
+  helpers.forEach((h, i) => h.visible = vis[i]);  // restore for the 3D view
 }
 
 function animate() { requestAnimationFrame(animate); controls3d.update(); view3d.renderer.render(scene, view3d.camera); }
