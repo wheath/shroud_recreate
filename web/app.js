@@ -1,12 +1,10 @@
-// shroud_recreate — MVP web app  ·  v0.1.3
+// shroud_recreate — MVP web app  ·  v0.1.4
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Bottom 3D view — two ways to transform the model (planes + capture box stay put):
-//   GIZMO (Unity-style): drag colored arrows (move) / rings (rotate). Toggle
-//     move/rotate with W / E or the "gizmo:" button.
-//   KEYBOARD (Blender-style): G (move) or R (rotate), move mouse, X/Y/Z locks an
-//     axis; click confirms, Esc cancels.
-//   plain-drag (no handle) = orbit camera. "reset model position" snaps back.
+// Bottom 3D view: gizmo (W move / E rotate / S scale) + Blender keys (G/R then
+// X/Y/Z to lock an axis). Pivot: presets (center/head/feet/origin) via dropdown,
+// or "pick point…" to click a spot on the model (Blender 3D-cursor). The mesh
+// lives inside a PIVOT GROUP so rotate/scale happen around the chosen pivot.
 //
 // Two poses: pose = AUTHORITATIVE (top 2D + projection); poseB = bottom pose
 // (independent). Capture box static (fixed) or move-with-model (rides pose).
@@ -20,7 +18,7 @@ import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
-const APP_VERSION = "v0.1.3";
+const APP_VERSION = "v0.1.4";
 console.log("shroud_recreate " + APP_VERSION);
 { const vEl = document.getElementById("version"); if (vEl) vEl.textContent = APP_VERSION; }
 
@@ -83,8 +81,8 @@ scene.add(new THREE.HemisphereLight(0xbfc7d2, 0x1a1a1f, 0.9));
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.9); keyLight.position.set(3, 6, 5); scene.add(keyLight);
 const fillLight = new THREE.DirectionalLight(0x88a0c0, 0.35); fillLight.position.set(-4, 2, -5); scene.add(fillLight);
 
-// Unity-style gizmo (arrows move, rings rotate). Attached to the model on load;
-// drags write back into the bottom pose. Suspends OrbitControls while dragging.
+// Unity-style gizmo (arrows move, rings rotate, boxes scale). Attached to the
+// PIVOT GROUP on load; drags write back into the bottom pose.
 const gizmo = new TransformControls(view3d.camera, view3d.renderer.domElement);
 gizmo.setMode("translate");
 gizmo.setSpace("world");
@@ -96,6 +94,12 @@ gizmo.addEventListener("dragging-changed", (e) => {
   if (!e.value) syncPoseFromMesh();
 });
 gizmo.addEventListener("objectChange", () => { syncPoseFromMesh(); render(); });
+
+// Pivot group: the mesh lives INSIDE this group. Rotating/scaling the GROUP rotates
+// /scales the mesh around the group's origin = the pivot point.
+const pivot = new THREE.Group();
+scene.add(pivot);
+const pivotLocal = new THREE.Vector3(0, 0, 0);
 
 const planeMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
@@ -251,10 +255,12 @@ function loadModel(url) {
       if (!geo) { setStatus("No mesh found in model file.", true); return; }
       try { geo = mergeVertices(geo); } catch (e) { console.warn("mergeVertices failed", e); }
       geo.computeVertexNormals();
-      if (state.mesh3) { scene.remove(state.mesh3); }
+      if (state.mesh3) { pivot.remove(state.mesh3); }
       state.mesh3 = new THREE.Mesh(geo, shadingMaterial());
-      scene.add(state.mesh3);
-      gizmo.attach(state.mesh3);
+      pivot.position.set(0,0,0); pivot.rotation.set(0,0,0); pivot.scale.set(1,1,1);
+      state.mesh3.position.set(0,0,0);
+      pivot.add(state.mesh3);
+      gizmo.attach(pivot);
 
       HEAD = deriveHeadRegion(geo);
       recomputeHeadDerived();
@@ -263,6 +269,7 @@ function loadModel(url) {
       state.planeY = HEAD.y[1] + (hw + hd) * 0.25;
       rebuildSceneHelpers();
       headLocal = collectHeadVerts(geo);
+      setPivotPreset("center");   // default pivot = model center
 
       frame3dCamera();
       positionTopDownCamera();
@@ -321,17 +328,43 @@ function bottomPose() { return state.linked ? pose : poseB; }
 
 function applyPoseObj(p) {
   if (!state.mesh3) return;
-  state.mesh3.rotation.set(p.rx, p.ry, p.rz);
-  state.mesh3.position.set(p.tx, p.ty || 0, p.tz);
-  state.mesh3.scale.setScalar(p.scale);
-  state.mesh3.updateMatrixWorld();
+  // Pose is applied to the PIVOT GROUP; the mesh sits offset inside it.
+  pivot.rotation.set(p.rx, p.ry, p.rz);
+  pivot.position.set(p.tx, p.ty || 0, p.tz);
+  if (p.sx != null) pivot.scale.set(p.sx, p.sy, p.sz);
+  else pivot.scale.setScalar(p.scale);
+  pivot.updateMatrixWorld(true);
 }
-// Read the mesh's current transform (set by the gizmo) back into the bottom pose.
+// Read the pivot group's transform (set by the gizmo) back into the bottom pose.
 function syncPoseFromMesh() {
   if (!state.mesh3) return;
   const p = bottomPose();
-  p.rx = state.mesh3.rotation.x; p.ry = state.mesh3.rotation.y; p.rz = state.mesh3.rotation.z;
-  p.tx = state.mesh3.position.x; p.ty = state.mesh3.position.y; p.tz = state.mesh3.position.z;
+  p.rx = pivot.rotation.x; p.ry = pivot.rotation.y; p.rz = pivot.rotation.z;
+  p.tx = pivot.position.x; p.ty = pivot.position.y; p.tz = pivot.position.z;
+  p.sx = pivot.scale.x; p.sy = pivot.scale.y; p.sz = pivot.scale.z;
+  p.scale = pivot.scale.x;
+}
+
+// Set the pivot to a LOCAL point on the mesh, preserving the current world pose.
+function setPivotLocal(localPt) {
+  if (!state.mesh3) return;
+  pivot.updateMatrixWorld(true);
+  const w = localPt.clone().applyMatrix4(pivot.matrixWorld);  // current world pos of that point
+  state.mesh3.position.copy(localPt.clone().multiplyScalar(-1)); // offset mesh so point sits at group origin
+  pivot.position.copy(w);
+  pivotLocal.copy(localPt);
+  syncPoseFromMesh();
+  render();
+}
+function setPivotPreset(which) {
+  if (!state.mesh3) return;
+  const c = MODEL.center, s = MODEL.size;
+  let lp;
+  if (which === "center")      lp = new THREE.Vector3(c.x, c.y, c.z);
+  else if (which === "head")   lp = new THREE.Vector3((HEAD.x[0]+HEAD.x[1])/2, (HEAD.y[0]+HEAD.y[1])/2, (HEAD.z[0]+HEAD.z[1])/2);
+  else if (which === "feet")   lp = new THREE.Vector3(c.x, c.y, c.z + (s.z/2) * (HEAD.z[0] < c.z ? 1 : -1));
+  else                          lp = new THREE.Vector3(0, 0, 0);
+  setPivotLocal(lp);
 }
 function applyPose() {
   applyPoseObj(pose);
@@ -395,7 +428,7 @@ el2d.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 // ---- bottom 3D view: gizmo (mouse) + G/R keyboard with X/Y/Z axis lock ----
-let xform = null;   // { mode, axis, lastX, lastY, snapshot }
+let xform = null;
 const el3d = view3d.renderer.domElement;
 
 function snapshotPose(p) { return { rx:p.rx, ry:p.ry, rz:p.rz, tx:p.tx, ty:p.ty, tz:p.tz, scale:p.scale }; }
@@ -422,25 +455,31 @@ function endXform(cancel) {
 }
 
 function setGizmoMode(mode) {
-  gizmo.setMode(mode === "rotate" ? "rotate" : "translate");
+  const m = mode === "rotate" ? "rotate" : mode === "scale" ? "scale" : "translate";
+  gizmo.setMode(m);
   const btn = document.getElementById("gizmoModeBtn");
-  if (btn) btn.textContent = mode === "rotate" ? "gizmo: rotate" : "gizmo: move";
+  if (btn) btn.textContent = m === "rotate" ? "gizmo: rotate" : m === "scale" ? "gizmo: scale" : "gizmo: move";
+}
+const GIZMO_CYCLE = ["translate", "rotate", "scale"];
+function cycleGizmoMode() {
+  const i = GIZMO_CYCLE.indexOf(gizmo.getMode());
+  const next = GIZMO_CYCLE[(i + 1) % GIZMO_CYCLE.length];
+  setGizmoMode(next === "translate" ? "move" : next);
 }
 const gizmoModeBtn = document.getElementById("gizmoModeBtn");
-if (gizmoModeBtn) gizmoModeBtn.addEventListener("click", () => {
-  setGizmoMode(gizmo.getMode() === "translate" ? "rotate" : "move");
-});
+if (gizmoModeBtn) gizmoModeBtn.addEventListener("click", cycleGizmoMode);
 
 addEventListener("keydown", (e) => {
   const tag = (e.target && e.target.tagName) || "";
-  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;  // don't hijack typing
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
   const k = e.key.toLowerCase();
   if (e.repeat && !"xyz".includes(k)) return;
   if (k === "g") { startXform("move"); }
   else if (k === "r") { startXform("rotate"); }
   else if (k === "w") { setGizmoMode("move"); }
   else if (k === "e") { setGizmoMode("rotate"); }
-  else if (k === "escape") { endXform(true); }
+  else if (k === "s") { setGizmoMode("scale"); }
+  else if (k === "escape") { endXform(true); if (pickingPivot) { pickingPivot = false; setStatus(`Ready · ${APP_VERSION}`); } }
   else if (xform && (k === "x" || k === "y" || k === "z")) {
     xform.axis = (xform.axis === k) ? null : k;
     updateXformStatus();
@@ -476,8 +515,42 @@ const resetModelBtn = document.getElementById("resetModelBtn");
 if (resetModelBtn) resetModelBtn.addEventListener("click", () => {
   const p = bottomPose();
   p.rx = p.ry = p.rz = 0; p.tx = p.ty = p.tz = 0; p.scale = 1;
-  render();
+  p.sx = p.sy = p.sz = 1;
+  setPivotPreset("center");
 });
+
+// pivot preset dropdown
+const pivotSel = document.getElementById("pivotSel");
+if (pivotSel) pivotSel.addEventListener("change", () => {
+  if (pivotSel.value === "manual") { startPivotPick(); }
+  else setPivotPreset(pivotSel.value);
+});
+
+// click-to-place pivot (Blender 3D-cursor): next click raycasts onto the mesh.
+let pickingPivot = false;
+const ray = new THREE.Raycaster();
+function startPivotPick() {
+  pickingPivot = true;
+  setStatus("Click a point on the model to set the pivot · Esc cancels");
+}
+el3d.addEventListener("pointerdown", (e) => {
+  if (!pickingPivot || !state.mesh3) return;
+  e.stopPropagation();
+  const r = el3d.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - r.left) / r.width) * 2 - 1,
+    -((e.clientY - r.top) / r.height) * 2 + 1
+  );
+  ray.setFromCamera(ndc, view3d.camera);
+  const hit = ray.intersectObject(state.mesh3, true)[0];
+  if (hit) {
+    const local = state.mesh3.worldToLocal(hit.point.clone());
+    setPivotLocal(local);
+    setStatus(`Ready · ${APP_VERSION}`);
+  }
+  pickingPivot = false;
+  if (pivotSel) pivotSel.value = "manual";
+}, true);
 
 // ---------------------------------------------------------------- reference image
 const REFERENCE_URL = "../reference/shroud_of_turin_pos_neg_face.jpg";
@@ -527,7 +600,7 @@ for (const el of document.querySelectorAll("input[name=linkmode]")) {
     const btn = document.getElementById("makeRealBtn");
     if (btn) btn.style.display = state.linked ? "none" : "inline-block";
     const h3 = document.getElementById("hint3d");
-    if (h3) h3.textContent = state.linked ? "· drag gizmo · W/E mode · G/R+X/Y/Z (mirrors top)" : "· drag gizmo · W/E mode · G/R+X/Y/Z keys";
+    if (h3) h3.textContent = state.linked ? "· gizmo W/E/S · G/R/S+X/Y/Z (mirrors top)" : "· gizmo W/E/S · G/R/S + X/Y/Z keys";
     render();
   });
 }
