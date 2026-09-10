@@ -93,7 +93,7 @@
   <header>
     <h1>shroud_recreate</h1>
     <span class="tag">projection workbench · MVP</span>
-    <span class="tag" id="version" style="color:var(--accent);border-color:var(--accent);">v0.1.3</span>
+    <span class="tag" id="version" style="color:var(--accent);border-color:var(--accent);">v0.1.4</span>
     <span id="status">Starting…</span>
   </header>
 
@@ -120,8 +120,17 @@
           <label style="cursor:pointer;"><input type="radio" name="linkmode" value="independent" style="vertical-align:middle;" /> independent</label>
           <button class="btn" id="makeRealBtn" style="display:none;">make bottom the real pose</button>
           <button class="btn" id="gizmoModeBtn">gizmo: move</button>
+          <label style="display:inline-flex;align-items:center;gap:4px;">pivot
+            <select id="pivotSel" style="background:#0e1014;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:2px 4px;font-size:11px;">
+              <option value="center" selected>center</option>
+              <option value="head">head</option>
+              <option value="feet">feet</option>
+              <option value="origin">origin</option>
+              <option value="manual">pick point…</option>
+            </select>
+          </label>
           <button class="btn" id="resetModelBtn">reset model position</button>
-          <span id="hint3d">· drag gizmo · W/E mode · G/R + X/Y/Z keys</span>
+          <span id="hint3d">· gizmo W/E/S · G/R/S + X/Y/Z keys</span>
         </span>
       </div>
       <div class="stage"><canvas id="view3d" class="gl"></canvas></div>
