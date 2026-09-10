@@ -2,15 +2,16 @@
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
 // Layer model:
-//   3D model  — geometry + a SHADING type (phong=smooth / nonphong=flat / bare=
-//               wireframe), for the model INSPECT view.
-//   Cloth plane — OWNS the 2D projection. Two modes (toggle) so you can compare:
-//     FAITHFUL  = tone from DISTANCE to the plane (per-vertex, smoothly
-//                 interpolated → no facets). "An image made of distance."
-//     SHORTCUT  = tone from Phong/Lambert light overhead (surface ANGLE, not
-//                 distance). Smooth & convincing but the documented "lit bust"
-//                 mistake — kept precisely so you can compare the two.
-//   Near/far grays and the sampled faint band apply to both modes.
+//   3D model  — geometry + a SHADING type (phong / nonphong / bare), for the
+//               model INSPECT view. Its control section is tied to the model layer.
+//   Cloth plane — OWNS the 2D projection. Two modes (Faithful=distance,
+//               Shortcut=Phong light) so you can compare distance vs light. Near/
+//               far grays and the sampled faint band apply to both. Its control
+//               section is tied to the cloth layer; disabling the cloth layer dims
+//               and locks that section and shows the raw model in the 2D area.
+//
+// Control sections are LINKED to layers: selecting a layer jumps/highlights its
+// section; disabling a layer dims + locks its section.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -106,16 +107,10 @@ function rebuildSceneHelpers() {
 }
 
 // ---------------------------------------------------------------- projection shaders
-// Two ways to turn the model into a grayscale cloth image, toggleable so you can
-// compare them (the whole point: distance vs light).
-//
-// FAITHFUL (distance): tone = distance from the cloth plane to the surface,
-//   computed PER-VERTEX and smoothly interpolated across triangles (so no facets),
-//   then mapped into [far..near]. This is "an image made of distance."
-//
-// SHORTCUT (phong light): tone = Phong/Lambert shading from a light at the cloth
-//   plane shining straight down. Smooth and convincing, but it encodes surface
-//   ANGLE, not distance — the documented "lit bust" mistake. Kept for comparison.
+// FAITHFUL (distance): tone = per-vertex distance to the plane, smoothly
+//   interpolated (no facets), mapped into [far..near]. "An image made of distance."
+// SHORTCUT (phong light): tone = overhead Phong/Lambert light (surface ANGLE,
+//   not distance) — the documented "lit bust". Kept for comparison.
 
 const distMatFaithful = new THREE.ShaderMaterial({
   uniforms: {
@@ -127,7 +122,6 @@ const distMatFaithful = new THREE.ShaderMaterial({
     varying float vT;
     void main(){
       vec4 wp = modelMatrix * vec4(position, 1.0);
-      // t = 0 at the farthest point, 1 at the nearest — per vertex, interpolated smoothly
       vT = clamp((wp.y - yMin) / max(yMax - yMin, 1e-5), 0.0, 1.0);
       gl_Position = projectionMatrix * viewMatrix * wp;
     }
@@ -136,7 +130,7 @@ const distMatFaithful = new THREE.ShaderMaterial({
     uniform float nearTone, farTone;
     varying float vT;
     void main(){
-      float g = mix(farTone, nearTone, vT);   // interpolated distance -> gray
+      float g = mix(farTone, nearTone, vT);
       gl_FragColor = vec4(vec3(g), 1.0);
     }
   `,
@@ -150,7 +144,7 @@ const distMatShortcut = new THREE.ShaderMaterial({
   vertexShader: `
     varying vec3 vN;
     void main(){
-      vN = normalize(mat3(modelMatrix) * normal);   // world-space normal (Phong-interpolated)
+      vN = normalize(mat3(modelMatrix) * normal);
       gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
     }
   `,
@@ -158,9 +152,8 @@ const distMatShortcut = new THREE.ShaderMaterial({
     uniform float nearTone, farTone;
     varying vec3 vN;
     void main(){
-      // light straight down from the cloth plane: brightness = up-facing-ness (Lambert)
       float ndl = clamp(dot(normalize(vN), vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
-      float g = mix(farTone, nearTone, ndl);   // ANGLE-based, not distance (the mistake)
+      float g = mix(farTone, nearTone, ndl);
       gl_FragColor = vec4(vec3(g), 1.0);
     }
   `,
@@ -183,10 +176,7 @@ function syncProjUniforms() {
 }
 let projYMin = 0, projYMax = 1;
 
-// model display materials by shading type (correctly named)
-//   phong    = smooth normal interpolation (facets hidden) — true Phong shading
-//   nonphong = flat per-face shading (facets visible)
-//   bare     = wireframe (polygon edges only)
+// model display materials by shading type
 const matPhong    = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.9, metalness: 0.0, flatShading: false });
 const matNonPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.9, metalness: 0.0, flatShading: true });
 const matBare     = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, wireframe: true });
@@ -292,12 +282,11 @@ el2d.addEventListener("pointermove", (e) => {
   if (drag.mode === "rotate") {
     pose.ry += dx * 0.01; pose.rx += dy * 0.01;
   } else {
-    // move scaled to the 2D ortho extent so it tracks the cursor regardless of model scale
     const cam = view2d.camera;
     const sx = (cam.right - cam.left) / (el2d.clientWidth || 1);
     const sz = (cam.top - cam.bottom) / (el2d.clientHeight || 1);
     pose.tx += dx * sx;
-    pose.tz += dy * sz;   // screen-down maps to +z (head toward top uses up=(0,0,-1))
+    pose.tz += dy * sz;
   }
   render();
 });
@@ -324,7 +313,6 @@ planeSlider.addEventListener("input", () => {
   render();
 });
 
-// near/far grayscale inputs + sampled toggle (wired if present in the DOM)
 const nearInput = document.getElementById("nearVal");
 const farInput = document.getElementById("farVal");
 const sampledToggle = document.getElementById("useSampled");
@@ -345,22 +333,41 @@ for (const el of document.querySelectorAll("input[name=shading]")) {
   el.addEventListener("change", () => { if (el.checked) { state.shading = el.value; if (state.mesh3) state.mesh3.material = shadingMaterial(); render(); } });
 }
 
-// ---------------------------------------------------------------- layers: active view + cloth on/off
+// ---------------------------------------------------------------- layers <-> control sections
+function sectionFor(key) { return document.querySelector(`.group[data-section="${key}"]`); }
+
+function highlightActiveSection(key) {
+  for (const g of document.querySelectorAll(".group[data-section]")) {
+    g.classList.toggle("active-section", g.dataset.section === key);
+  }
+  const sec = sectionFor(key);
+  if (sec) {
+    sec.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    sec.classList.remove("flash"); void sec.offsetWidth; sec.classList.add("flash");
+  }
+}
+
+function setSectionEnabled(key, enabled) {
+  const sec = sectionFor(key);
+  if (!sec) return;
+  sec.classList.toggle("section-disabled", !enabled);
+  for (const inp of sec.querySelectorAll("input,button")) inp.disabled = !enabled;
+}
+
 function setActiveView(which) {
   state.activeView = which;
   for (const el of document.querySelectorAll(".layer[data-view]")) el.classList.toggle("active", el.dataset.view === which);
   const label = document.getElementById("activeLabel");
   if (label) label.textContent = which === "cloth" ? "Cloth · distance projection" : "3D model";
+  highlightActiveSection(which === "cloth" ? "cloth" : "model");
   render();
 }
 for (const el of document.querySelectorAll(".layer[data-view]")) {
   el.addEventListener("click", (e) => {
-    // clicking the eye toggles enable; clicking the row selects it as the 2D view
-    if (e.target.classList.contains("eye")) return; // handled below
+    if (e.target.classList.contains("eye")) return;
     setActiveView(el.dataset.view);
   });
 }
-// eye toggles (enable/disable). Only the cloth plane meaningfully toggles for now.
 for (const eye of document.querySelectorAll(".layer .eye[data-toggle]")) {
   eye.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -369,32 +376,45 @@ for (const eye of document.querySelectorAll(".layer .eye[data-toggle]")) {
       state.clothOn = !state.clothOn;
       eye.textContent = state.clothOn ? "\u25C9" : "\u25CE";
       eye.classList.toggle("off", !state.clothOn);
-      // if cloth turned off and it was the active view, the 2D shows the model instead
+      setSectionEnabled("cloth", state.clothOn);
       render();
     }
   });
 }
+setSectionEnabled("cloth", state.clothOn);
+highlightActiveSection("cloth");
 
 // ---------------------------------------------------------------- cameras / render
 function frame3dCamera() {
   if (!state.mesh3) return;
-  // Fit the WHOLE body across the wide bottom strip.
   const bb = new THREE.Box3().setFromObject(state.mesh3);
-  const size = bb.getSize(new THREE.Vector3());
-  const center = bb.getCenter(new THREE.Vector3());
+  const sphere = bb.getBoundingSphere(new THREE.Sphere());
+  const center = sphere.center, R = sphere.radius;
   const c = view3d.renderer.domElement;
   const aspect = (c.clientWidth || 16) / (c.clientHeight || 9);
-  // longest horizontal axis is the body length; view it side-on so it spans the width
-  const bodyLen = Math.max(size.x, size.z);
-  const dist = bodyLen * 0.62 / Math.tan((45 * Math.PI / 180) / 2) / Math.max(aspect, 1) * 1.05;
-  // place camera to the +Y/front so the reclining body reads left-to-right
-  view3d.camera.position.set(center.x, center.y + bodyLen * 0.25, center.z + dist);
-  view3d.camera.updateProjectionMatrix();
+  const cam = view3d.camera;
+  cam.aspect = aspect;
+  const vFov = 45 * Math.PI / 180;
+  const distV = R / Math.sin(vFov / 2);
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+  const distH = R / Math.sin(hFov / 2);
+  const dist = Math.max(distV, distH) * 1.05;
+  const size = bb.getSize(new THREE.Vector3());
+  const lengthAlongX = size.x >= size.z;
+  if (lengthAlongX) {
+    cam.position.set(center.x, center.y + dist * 0.25, center.z + dist * 0.97);
+    cam.up.set(0, 1, 0);
+  } else {
+    cam.position.set(center.x + dist * 0.97, center.y + dist * 0.25, center.z);
+    cam.up.set(0, 1, 0);
+  }
+  cam.near = dist * 0.01; cam.far = dist * 10;
+  cam.updateProjectionMatrix();
   controls3d.target.copy(center);
   controls3d.update();
 }
 function positionTopDownCamera() {
-  const half = Math.max(hw, hd) * 0.65;   // tighter frame on the head/neck
+  const half = Math.max(hw, hd) * 0.65;
   const cam = view2d.camera;
   const c = view2d.renderer.domElement;
   const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
@@ -411,7 +431,6 @@ function render() {
   applyPose();
   view3d.renderer.render(scene, view3d.camera);
 
-  // 2D area: cloth projection if (cloth on AND cloth view active), else raw shaded model.
   const showProjection = state.clothOn && state.activeView === "cloth" && state.mesh3;
   if (showProjection) {
     updateProjNormalization();
@@ -424,7 +443,6 @@ function render() {
     state.mesh3.material = savedMat;
     planeMesh.visible = pv; planeEdge.visible = ev; boxHelper.visible = bv;
   } else {
-    // raw shaded model (hide the plane/box helpers for a clean model view)
     const pv = planeMesh.visible, ev = planeEdge.visible, bv = boxHelper.visible;
     planeMesh.visible = planeEdge.visible = boxHelper.visible = false;
     view2d.renderer.setClearColor(0x14161a, 1);
