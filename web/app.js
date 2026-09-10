@@ -1,17 +1,15 @@
-// shroud_recreate — MVP web app  ·  v0.1.0
+// shroud_recreate — MVP web app  ·  v0.1.1
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Two views, two poses:
-//   pose  = AUTHORITATIVE — drives the top 2D view and the projection.
-//   poseB = bottom-only inspection pose, used when NOT linked.
-// LINKED (default): the top is the authority; the bottom MIRRORS it and is
-//   inspect-only (orbit the camera; dragging does NOT change the pose).
-// INDEPENDENT: the bottom has its own pose — shift-drag in the 3D view poses it
-//   without touching the projection; "make bottom the real pose" promotes it.
+// Capture box (the 2D viewing frame shown in the bottom 3D view):
+//   STATIC        — fixed in world; the model moves/rotates relative to it.
+//   MOVE-WITH-MODEL — rides the model's full transform (translation + rotation).
+// It's a real transformable wireframe (not an axis-aligned Box3Helper, which
+// can't rotate).
 //
-// Cloth plane owns the 2D projection: Faithful (distance) vs Shortcut (Phong light).
-// Model shading: phong / flat / bare + mesh-detail picker. Two planes: cloth (top)
-// + clipping (bottom). Capture frame static or move-with-model.
+// Two poses: pose = AUTHORITATIVE (top 2D + projection); poseB = bottom inspection
+// pose (independent mode). Cloth plane owns the projection: Faithful (distance) vs
+// Shortcut (Phong light). Model shading phong/flat/bare + mesh-detail picker.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -21,7 +19,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
-const APP_VERSION = "v0.1.0";
+const APP_VERSION = "v0.1.1";
 console.log("shroud_recreate " + APP_VERSION);
 { const vEl = document.getElementById("version"); if (vEl) vEl.textContent = APP_VERSION; }
 
@@ -84,7 +82,6 @@ scene.add(new THREE.HemisphereLight(0xbfc7d2, 0x1a1a1f, 0.9));
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.9); keyLight.position.set(3, 6, 5); scene.add(keyLight);
 const fillLight = new THREE.DirectionalLight(0x88a0c0, 0.35); fillLight.position.set(-4, 2, -5); scene.add(fillLight);
 
-// cloth plane (top)
 const planeMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ color: 0x3d7bd4, transparent: true, opacity: 0.15,
@@ -97,7 +94,6 @@ const planeEdge = new THREE.LineSegments(
 );
 planeEdge.rotation.x = -Math.PI / 2; scene.add(planeEdge);
 
-// clipping plane (floor)
 const clipMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ color: 0x8a6d3b, transparent: true, opacity: 0.12,
@@ -110,8 +106,14 @@ const clipEdge = new THREE.LineSegments(
 );
 clipEdge.rotation.x = -Math.PI / 2; scene.add(clipEdge);
 
-const projBox = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
-const boxHelper = new THREE.Box3Helper(projBox, 0x5a8fb0); scene.add(boxHelper);
+// capture box — a real transformable wireframe (Box3Helper can't rotate).
+const captureBox = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+  new THREE.LineBasicMaterial({ color: 0x5a8fb0 })
+);
+scene.add(captureBox);
+const capCenter = new THREE.Vector3();
+const capSize = new THREE.Vector3(1, 1, 1);
 
 function rebuildSceneHelpers() {
   const bodyW = MODEL.size.x * 1.05, bodyD = MODEL.size.z * 1.05;
@@ -126,9 +128,14 @@ function rebuildSceneHelpers() {
   clipMesh.position.set(bcx, clipY, bcz);
   clipEdge.geometry.dispose(); clipEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
   clipEdge.position.set(bcx, clipY, bcz);
-  projBox.min.set(HEAD.x[0], HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0]);
-  projBox.max.set(HEAD.x[1], state.planeY, HEAD.z[1]);
-  boxHelper.box.copy(projBox);
+  // capture region (head/neck) — world-space center + size; box geometry sized to it
+  const cxMin = HEAD.x[0], cxMax = HEAD.x[1];
+  const cyMin = HEAD.y[0] - (hw + hd) * 0.05, cyMax = state.planeY;
+  const czMin = HEAD.z[0], czMax = HEAD.z[1];
+  capCenter.set((cxMin+cxMax)/2, (cyMin+cyMax)/2, (czMin+czMax)/2);
+  capSize.set(cxMax-cxMin, cyMax-cyMin, czMax-czMin);
+  captureBox.geometry.dispose();
+  captureBox.geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(capSize.x, capSize.y, capSize.z));
   planeSlider.min = (HEAD.y[1]).toFixed(3);
   planeSlider.max = (HEAD.y[1] + (hw + hd) * 0.8).toFixed(3);
   planeSlider.step = ((hw + hd) * 0.01).toFixed(4);
@@ -304,19 +311,27 @@ function applyPoseObj(p) {
   state.mesh3.scale.setScalar(p.scale);
   state.mesh3.updateMatrixWorld();
 }
+// Apply the AUTHORITATIVE pose and transform the capture box.
 function applyPose() {
   applyPoseObj(pose);
-  const ox = state.frameStatic ? 0 : pose.tx;
-  const oz = state.frameStatic ? 0 : pose.tz;
-  projBox.min.set(HEAD.x[0] + ox, HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0] + oz);
-  projBox.max.set(HEAD.x[1] + ox, state.planeY, HEAD.z[1] + oz);
-  boxHelper.box.copy(projBox);
+  if (state.frameStatic) {
+    // Fixed in world — model moves/rotates relative to it.
+    captureBox.position.copy(capCenter);
+    captureBox.quaternion.identity();
+  } else {
+    // Ride the model: rotation about the model origin, then translation.
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(pose.rx, pose.ry, pose.rz));
+    const c = capCenter.clone().applyQuaternion(q);
+    c.x += pose.tx; c.z += pose.tz;
+    captureBox.position.copy(c);
+    captureBox.quaternion.copy(q);
+  }
 }
 function updateProjNormalization() {
   if (!state.mesh3) return;
   if (state.frameStatic) {
-    projYMin = projBox.min.y;
-    projYMax = projBox.max.y;
+    projYMin = capCenter.y - capSize.y / 2;
+    projYMax = capCenter.y + capSize.y / 2;
   } else {
     if (!headLocal) return;
     const m = state.mesh3.matrixWorld; const v = new THREE.Vector3();
@@ -332,8 +347,8 @@ let drag = null;
 const el2d = view2d.renderer.domElement;
 el2d.addEventListener("pointerdown", (e) => {
   let mode;
-  if (state.frameStatic) mode = e.shiftKey ? "rotate" : "move";  // static: drag slides
-  else                   mode = e.shiftKey ? "move" : "rotate";  // follow: drag rotates
+  if (state.frameStatic) mode = e.shiftKey ? "rotate" : "move";
+  else                   mode = e.shiftKey ? "move" : "rotate";
   drag = { x: e.clientX, y: e.clientY, mode };
   el2d.setPointerCapture(e.pointerId);
 });
@@ -401,6 +416,10 @@ refFile.addEventListener("change",(e)=>{ const f=e.target.files&&e.target.files[
 planeSlider.addEventListener("input", () => {
   state.planeY = parseFloat(planeSlider.value);
   planeMesh.position.y = state.planeY; planeEdge.position.y = state.planeY;
+  const cyMin = HEAD.y[0] - (hw + hd) * 0.05, cyMax = state.planeY;
+  capCenter.y = (cyMin + cyMax) / 2; capSize.y = cyMax - cyMin;
+  captureBox.geometry.dispose();
+  captureBox.geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(capSize.x, capSize.y, capSize.z));
   render();
 });
 
@@ -511,7 +530,8 @@ function frame3dCamera() {
   bb.expandByPoint(new THREE.Vector3(planeMesh.position.x + pw/2, state.planeY, planeMesh.position.z + pd/2));
   bb.expandByPoint(new THREE.Vector3(clipMesh.position.x - pw/2, state.clipY, clipMesh.position.z - pd/2));
   bb.expandByPoint(new THREE.Vector3(clipMesh.position.x + pw/2, state.clipY, clipMesh.position.z + pd/2));
-  bb.union(projBox);
+  bb.expandByPoint(new THREE.Vector3(capCenter.x - capSize.x/2, capCenter.y - capSize.y/2, capCenter.z - capSize.z/2));
+  bb.expandByPoint(new THREE.Vector3(capCenter.x + capSize.x/2, capCenter.y + capSize.y/2, capCenter.z + capSize.z/2));
   const size = bb.getSize(new THREE.Vector3());
   const center = bb.getCenter(new THREE.Vector3());
   const c = view3d.renderer.domElement;
@@ -558,7 +578,7 @@ function render() {
   applyPose();
   positionTopDownCamera();
   const showProjection = state.clothOn && state.activeView === "cloth";
-  const helpers = [planeMesh, planeEdge, clipMesh, clipEdge, boxHelper];
+  const helpers = [planeMesh, planeEdge, clipMesh, clipEdge, captureBox];
   const vis = helpers.map(h => h.visible);
   helpers.forEach(h => h.visible = false);
   if (showProjection) {
