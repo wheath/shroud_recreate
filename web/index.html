@@ -93,7 +93,7 @@
   <header>
     <h1>shroud_recreate</h1>
     <span class="tag">projection workbench · MVP</span>
-    <span class="tag" id="version" style="color:var(--accent);border-color:var(--accent);">v0.1.4</span>
+    <span class="tag" id="version" style="color:var(--accent);border-color:var(--accent);">v0.1.5</span>
     <span id="status">Starting…</span>
   </header>
 
@@ -119,7 +119,13 @@
           <label style="cursor:pointer;"><input type="radio" name="linkmode" value="linked" checked style="vertical-align:middle;" /> linked</label>
           <label style="cursor:pointer;"><input type="radio" name="linkmode" value="independent" style="vertical-align:middle;" /> independent</label>
           <button class="btn" id="makeRealBtn" style="display:none;">make bottom the real pose</button>
-          <button class="btn" id="gizmoModeBtn">gizmo: move</button>
+          <label style="display:inline-flex;align-items:center;gap:4px;">gizmo
+            <select id="gizmoModeSel" style="background:#0e1014;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:2px 4px;font-size:11px;">
+              <option value="translate" selected>move</option>
+              <option value="rotate">rotate</option>
+              <option value="scale">scale</option>
+            </select>
+          </label>
           <label style="display:inline-flex;align-items:center;gap:4px;">pivot
             <select id="pivotSel" style="background:#0e1014;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:2px 4px;font-size:11px;">
               <option value="center" selected>center</option>
