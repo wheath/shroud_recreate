@@ -43,9 +43,7 @@
   .group { padding:12px 12px 14px; border-bottom:1px solid var(--line); position:relative; }
   .group h2 { font-size:11px; font-weight:600; color:var(--ink-dim); margin:0 0 10px; letter-spacing:.02em;
     display:flex; align-items:center; gap:8px; }
-  /* active layer's section: accent bar linking it to the highlighted layer row */
   .group.active-section { background:#141a24; box-shadow:inset 3px 0 0 var(--accent); }
-  /* disabled layer's section: dim, lock, pill */
   .group.section-disabled { opacity:.4; }
   .group.section-disabled input, .group.section-disabled button, .group.section-disabled select { pointer-events:none; }
   .group .disabled-pill { display:none; font-size:9px; color:var(--warn); border:1px solid #4a3d22;
@@ -114,7 +112,15 @@
     </section>
 
     <section class="pane" id="paneThreeD">
-      <div class="cap"><span>3D view · inspect</span><span class="hint">orbit · pan · zoom · doesn't change the shot</span></div>
+      <div class="cap">
+        <span>3D view · inspect</span>
+        <span class="hint" style="display:flex;align-items:center;gap:10px;">
+          <label style="cursor:pointer;"><input type="radio" name="linkmode" value="linked" checked style="vertical-align:middle;" /> linked</label>
+          <label style="cursor:pointer;"><input type="radio" name="linkmode" value="independent" style="vertical-align:middle;" /> independent</label>
+          <button class="btn" id="makeRealBtn" style="display:none;">make bottom the real pose</button>
+          <span>· plain-drag orbit · shift-drag pose</span>
+        </span>
+      </div>
       <div class="stage"><canvas id="view3d" class="gl"></canvas></div>
     </section>
 
