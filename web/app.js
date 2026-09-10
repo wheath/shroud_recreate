@@ -2,16 +2,12 @@
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
 // Layer model:
-//   3D model  — geometry + a SHADING type (phong / nonphong / bare), for the
-//               model INSPECT view. Its control section is tied to the model layer.
-//   Cloth plane — OWNS the 2D projection. Two modes (Faithful=distance,
-//               Shortcut=Phong light) so you can compare distance vs light. Near/
-//               far grays and the sampled faint band apply to both. Its control
-//               section is tied to the cloth layer; disabling the cloth layer dims
-//               and locks that section and shows the raw model in the 2D area.
-//
-// Control sections are LINKED to layers: selecting a layer jumps/highlights its
-// section; disabling a layer dims + locks its section.
+//   3D model  — geometry + a SHADING type (phong=smooth / nonphong=faceted /
+//               bare=wireframe), for the model inspect view.
+//   Cloth plane — OWNS the 2D projection. Faithful (distance) vs Shortcut (Phong
+//               light) modes to compare. Near/far grays + sampled band apply to both.
+//   Capture frame — static (body moves through a fixed region) or move-with-model.
+//   Mouse wheel scales the model in the 2D authority view.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -45,14 +41,18 @@ const planeSlider = document.getElementById("planeHeight");
 const state = {
   mesh3: null,
   planeY: 1.4,
-  clothOn: true,               // cloth plane layer enabled?
-  shading: "phong",            // "phong" (smooth) | "nonphong" (flat) | "bare" (wireframe)
-  activeView: "cloth",         // which layer's output the 2D area shows: "cloth" | "model"
-  near: 1.0,                   // near-plane tone (grayscale)
-  far: 0.0,                    // far tone (grayscale) — default = normalized (wrong)
-  useSampled: false,           // override near/far with the faint sampled band
-  projMode: "faithful",        // cloth projection: "faithful" (distance) | "shortcut" (phong light)
+  clothOn: true,
+  shading: "phong",
+  activeView: "cloth",
+  near: 1.0,
+  far: 0.0,
+  useSampled: false,
+  projMode: "faithful",
+  frameStatic: true,           // capture box: static (body moves through) vs move-with-model
 };
+
+// full-model bounds (size/center), filled on load — used to size the planes
+const MODEL = { size: new THREE.Vector3(1,1,1), center: new THREE.Vector3(0,0,0) };
 
 // ---------------------------------------------------------------- viewports
 function makeViewport(canvas, { perspective }) {
@@ -74,8 +74,8 @@ const view2d = makeViewport(document.getElementById("view2d"), { perspective: fa
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x14161a);
 scene.add(new THREE.HemisphereLight(0xbfc7d2, 0x1a1a1f, 0.9));
-const keyLight = new THREE.DirectionalLight(0xffffff, 0.85); keyLight.position.set(3, 6, 5); scene.add(keyLight);
-const fillLight = new THREE.DirectionalLight(0x88a0c0, 0.3); fillLight.position.set(-4, 2, -5); scene.add(fillLight);
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.9); keyLight.position.set(3, 6, 5); scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0x88a0c0, 0.35); fillLight.position.set(-4, 2, -5); scene.add(fillLight);
 
 const planeMesh = new THREE.Mesh(
   new THREE.PlaneGeometry(1, 1),
@@ -92,11 +92,14 @@ const projBox = new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(
 const boxHelper = new THREE.Box3Helper(projBox, 0x5a8fb0); scene.add(boxHelper);
 
 function rebuildSceneHelpers() {
-  const pw = hw * 1.3, pd = hd * 1.3;
-  planeMesh.geometry.dispose(); planeMesh.geometry = new THREE.PlaneGeometry(pw, pd);
-  planeMesh.position.set(hcx, state.planeY, hcz);
-  planeEdge.geometry.dispose(); planeEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(pw, pd));
-  planeEdge.position.set(hcx, state.planeY, hcz);
+  // planes span the WHOLE body footprint (not just the head)
+  const bodyW = MODEL.size.x * 1.15, bodyD = MODEL.size.z * 1.15;
+  const bcx = MODEL.center.x, bcz = MODEL.center.z;
+  planeMesh.geometry.dispose(); planeMesh.geometry = new THREE.PlaneGeometry(bodyW, bodyD);
+  planeMesh.position.set(bcx, state.planeY, bcz);
+  planeEdge.geometry.dispose(); planeEdge.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bodyW, bodyD));
+  planeEdge.position.set(bcx, state.planeY, bcz);
+  // capture box frames the head/neck (what the 2D projection shows)
   projBox.min.set(HEAD.x[0], HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0]);
   projBox.max.set(HEAD.x[1], state.planeY, HEAD.z[1]);
   boxHelper.box.copy(projBox);
@@ -177,8 +180,9 @@ function syncProjUniforms() {
 let projYMin = 0, projYMax = 1;
 
 // model display materials by shading type
-const matPhong    = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.9, metalness: 0.0, flatShading: false });
-const matNonPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.9, metalness: 0.0, flatShading: true });
+//   phong=smooth (facets hidden), nonphong=faceted (facets visible), bare=wireframe
+const matPhong    = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.75, metalness: 0.0, flatShading: false });
+const matNonPhong = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.5, metalness: 0.0, flatShading: true });
 const matBare     = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, wireframe: true });
 function shadingMaterial() {
   return state.shading === "nonphong" ? matNonPhong
@@ -202,6 +206,8 @@ new OBJLoader().load(
 
     HEAD = deriveHeadRegion(geo);
     recomputeHeadDerived();
+    const fbb = new THREE.Box3().setFromObject(state.mesh3);
+    fbb.getSize(MODEL.size); fbb.getCenter(MODEL.center);
     state.planeY = HEAD.y[1] + (hw + hd) * 0.25;
     rebuildSceneHelpers();
     headLocal = collectHeadVerts(geo);
@@ -252,12 +258,19 @@ function deriveHeadRegion(geo) {
 }
 
 // ---------------------------------------------------------------- pose (2D authority)
-const pose = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0 };
+const pose = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
 function applyPose() {
   if (!state.mesh3) return;
   state.mesh3.rotation.set(pose.rx, pose.ry, pose.rz);
   state.mesh3.position.set(pose.tx, 0, pose.tz);
+  state.mesh3.scale.setScalar(pose.scale);
   state.mesh3.updateMatrixWorld();
+  // capture box: static (fixed at head region) or follows the model's translation
+  const ox = state.frameStatic ? 0 : pose.tx;
+  const oz = state.frameStatic ? 0 : pose.tz;
+  projBox.min.set(HEAD.x[0] + ox, HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0] + oz);
+  projBox.max.set(HEAD.x[1] + ox, state.planeY, HEAD.z[1] + oz);
+  boxHelper.box.copy(projBox);
 }
 function updateProjNormalization() {
   if (!headLocal || !state.mesh3) return;
@@ -268,7 +281,7 @@ function updateProjNormalization() {
   syncProjUniforms();
 }
 
-// drag in 2D view: rotate (plain) / move (shift). Move scaled to model size.
+// drag in 2D view: rotate (plain) / move (shift); wheel = scale
 let drag = null;
 const el2d = view2d.renderer.domElement;
 el2d.addEventListener("pointerdown", (e) => {
@@ -291,6 +304,13 @@ el2d.addEventListener("pointermove", (e) => {
   render();
 });
 el2d.addEventListener("pointerup", (e) => { drag = null; try { el2d.releasePointerCapture(e.pointerId); } catch {} });
+// mouse wheel = scale the model in the 2D authority view
+el2d.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const factor = Math.exp(-e.deltaY * 0.0012);
+  pose.scale = Math.min(8, Math.max(0.15, pose.scale * factor));
+  render();
+}, { passive: false });
 
 // ---------------------------------------------------------------- reference image
 const REFERENCE_URL = "../reference/shroud_of_turin_pos_neg_face.jpg";
@@ -309,7 +329,6 @@ refFile.addEventListener("change",(e)=>{ const f=e.target.files&&e.target.files[
 planeSlider.addEventListener("input", () => {
   state.planeY = parseFloat(planeSlider.value);
   planeMesh.position.y = state.planeY; planeEdge.position.y = state.planeY;
-  projBox.max.y = state.planeY; boxHelper.box.copy(projBox);
   render();
 });
 
@@ -325,6 +344,10 @@ if (normalizeBtn) normalizeBtn.addEventListener("click", () => { state.useSample
 // projection mode: faithful (distance) vs shortcut (phong light)
 for (const el of document.querySelectorAll("input[name=projmode]")) {
   el.addEventListener("change", () => { if (el.checked) { state.projMode = el.value; render(); } });
+}
+// capture-frame behavior: static (body moves through a fixed box) vs move-with-model
+for (const el of document.querySelectorAll("input[name=framemode]")) {
+  el.addEventListener("change", () => { if (el.checked) { state.frameStatic = (el.value === "static"); render(); } });
 }
 function clamp01(x){ return Math.max(0, Math.min(1, isNaN(x)?0:x)); }
 
@@ -388,26 +411,25 @@ highlightActiveSection("cloth");
 function frame3dCamera() {
   if (!state.mesh3) return;
   const bb = new THREE.Box3().setFromObject(state.mesh3);
-  const sphere = bb.getBoundingSphere(new THREE.Sphere());
-  const center = sphere.center, R = sphere.radius;
+  const size = bb.getSize(new THREE.Vector3());
+  const center = bb.getCenter(new THREE.Vector3());
   const c = view3d.renderer.domElement;
   const aspect = (c.clientWidth || 16) / (c.clientHeight || 9);
   const cam = view3d.camera;
   cam.aspect = aspect;
   const vFov = 45 * Math.PI / 180;
-  const distV = R / Math.sin(vFov / 2);
-  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
-  const distH = R / Math.sin(hFov / 2);
-  const dist = Math.max(distV, distH) * 1.05;
-  const size = bb.getSize(new THREE.Vector3());
+  // Long horizontal axis = body length (runs across the width); other horizontal = depth.
   const lengthAlongX = size.x >= size.z;
+  const lengthSpan = lengthAlongX ? size.x : size.z;
+  const heightSpan = size.y;
+  const fit = Math.max(lengthSpan / aspect, heightSpan);
+  const dist = (fit * 0.5) / Math.tan(vFov / 2) * 1.08;
   if (lengthAlongX) {
-    cam.position.set(center.x, center.y + dist * 0.25, center.z + dist * 0.97);
-    cam.up.set(0, 1, 0);
+    cam.position.set(center.x, center.y + dist * 0.18, center.z + dist);
   } else {
-    cam.position.set(center.x + dist * 0.97, center.y + dist * 0.25, center.z);
-    cam.up.set(0, 1, 0);
+    cam.position.set(center.x + dist, center.y + dist * 0.18, center.z);
   }
+  cam.up.set(0, 1, 0);
   cam.near = dist * 0.01; cam.far = dist * 10;
   cam.updateProjectionMatrix();
   controls3d.target.copy(center);
