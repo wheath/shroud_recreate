@@ -4,9 +4,10 @@
 // Two views, two poses:
 //   pose  = AUTHORITATIVE — drives the top 2D view and the projection.
 //   poseB = bottom-only inspection pose, used when NOT linked.
-// Linked (default): bottom mirrors top. Independent: bottom has its own pose you
-// can manipulate (shift-drag in the 3D view) without changing the projection;
-// "make bottom the real pose" copies it up to the authoritative pose.
+// LINKED (default): the top is the authority; the bottom MIRRORS it and is
+//   inspect-only (orbit the camera; dragging does NOT change the pose).
+// INDEPENDENT: the bottom has its own pose — shift-drag in the 3D view poses it
+//   without touching the projection; "make bottom the real pose" promotes it.
 //
 // Cloth plane owns the 2D projection: Faithful (distance) vs Shortcut (Phong light).
 // Model shading: phong / flat / bare + mesh-detail picker. Two planes: cloth (top)
@@ -51,7 +52,7 @@ const state = {
   projMode: "faithful",
   frameStatic: true,
   clipY: -1,
-  linked: true,                // true = bottom mirrors top (shared pose); false = independent
+  linked: true,
 };
 
 const MODEL = { size: new THREE.Vector3(1,1,1), center: new THREE.Vector3(0,0,0) };
@@ -356,13 +357,12 @@ el2d.addEventListener("wheel", (e) => {
   render();
 }, { passive: false });
 
-// ---- bottom 3D view: shift-drag poses the (bottom) model; plain drag orbits ----
-// Shift-drag rotates the bottom model; Shift+Alt-drag moves it. OrbitControls is
-// suspended while shift is held so the gestures don't fight.
+// ---- bottom 3D view: pose ONLY when independent; linked = inspect-only (orbit) ----
 let drag3 = null;
 const el3d = view3d.renderer.domElement;
 el3d.addEventListener("pointerdown", (e) => {
-  if (!e.shiftKey || !state.mesh3) return;      // plain drag → OrbitControls orbits
+  // In linked mode the bottom is a mirror of the top — never drives the pose.
+  if (state.linked || !e.shiftKey || !state.mesh3) return;  // plain drag → orbit
   controls3d.enabled = false;
   drag3 = { x: e.clientX, y: e.clientY, mode: e.altKey ? "move" : "rotate" };
   el3d.setPointerCapture(e.pointerId);
@@ -426,6 +426,8 @@ for (const el of document.querySelectorAll("input[name=linkmode]")) {
     if (wasLinked && !state.linked) Object.assign(poseB, pose);  // seed bottom from current pose
     const btn = document.getElementById("makeRealBtn");
     if (btn) btn.style.display = state.linked ? "none" : "inline-block";
+    const h3 = document.getElementById("hint3d");
+    if (h3) h3.textContent = state.linked ? "· orbit to inspect (mirrors the top)" : "· orbit · shift-drag to pose";
     render();
   });
 }
