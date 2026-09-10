@@ -40,8 +40,19 @@
 
   .dock { background:var(--panel); overflow-y:auto; display:flex; flex-direction:column; }
   .dock .cap { position:sticky; top:0; z-index:1; }
-  .group { padding:12px 12px 14px; border-bottom:1px solid var(--line); }
-  .group h2 { font-size:11px; font-weight:600; color:var(--ink-dim); margin:0 0 10px; letter-spacing:.02em; }
+  .group { padding:12px 12px 14px; border-bottom:1px solid var(--line); position:relative; }
+  .group h2 { font-size:11px; font-weight:600; color:var(--ink-dim); margin:0 0 10px; letter-spacing:.02em;
+    display:flex; align-items:center; gap:8px; }
+  /* active layer's section: accent bar linking it to the highlighted layer row */
+  .group.active-section { background:#141a24; box-shadow:inset 3px 0 0 var(--accent); }
+  /* disabled layer's section: dim, lock, pill */
+  .group.section-disabled { opacity:.4; }
+  .group.section-disabled input, .group.section-disabled button { pointer-events:none; }
+  .group .disabled-pill { display:none; font-size:9px; color:var(--warn); border:1px solid #4a3d22;
+    background:#24200f; padding:1px 6px; border-radius:999px; font-weight:500; letter-spacing:0; }
+  .group.section-disabled .disabled-pill { display:inline-block; }
+  @keyframes sectionflash { 0%{background:#1c2740;} 100%{background:transparent;} }
+  .group.flash { animation:sectionflash 0.6s ease-out; }
   .row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:8px 0; }
   .row label { font-size:12px; color:var(--ink); }
   input[type=range] { width:100%; accent-color:var(--accent); }
@@ -110,18 +121,18 @@
     <aside class="pane dock" id="dock">
       <div class="cap"><span>Controls</span></div>
 
-      <div class="group">
-        <h2>3D model · shading</h2>
+      <div class="group" data-section="model">
+        <h2>3D model · shading <span class="disabled-pill">disabled</span></h2>
         <div class="radios">
           <label class="radio"><input type="radio" name="shading" value="phong" checked /> <span>Phong shading <small>(smooth)</small></span></label>
           <label class="radio"><input type="radio" name="shading" value="nonphong" /> <span>Non-Phong shading <small>(flat / faceted)</small></span></label>
           <label class="radio"><input type="radio" name="shading" value="bare" /> <span>Bare polygons <small>(wireframe)</small></span></label>
         </div>
-        <p class="helpline">How the model's surface is drawn, for the model view. The cloth projection has its own modes below.</p>
+        <p class="helpline">Drawn in the 2D area when the <b>3D model</b> layer is selected. Phong = smooth, Non-Phong = faceted, Bare = wireframe.</p>
       </div>
 
-      <div class="group">
-        <h2>Cloth plane</h2>
+      <div class="group" data-section="cloth">
+        <h2>Cloth plane <span class="disabled-pill">disabled</span></h2>
         <div class="row"><label for="planeHeight">Height</label></div>
         <input id="planeHeight" type="range" min="0.2" max="2.5" step="0.01" value="1.4" />
         <div style="margin-top:12px;" class="radios">
