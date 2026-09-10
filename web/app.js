@@ -1,20 +1,16 @@
 // shroud_recreate — MVP web app
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Layer model (this pass):
+// Layer model:
 //   3D model  — geometry + a SHADING type (phong=smooth / nonphong=flat / bare=
-//               wireframe). Shading is a property of the model; the cloth projects
-//               distance regardless of the model's shading.
-//   Cloth plane — OWNS the distance projection. It reads the posed model and maps
-//               distance-to-the-plane into a grayscale band [far .. near]. When the
-//               cloth is OFF, the 2D area just shows the raw shaded model.
-//
-// Distance->gray mapping (cloth plane properties):
-//   - near (grayscale 0..1) = closest-to-plane tone
-//   - far  (grayscale 0..1) = farthest tone
-//   - "normalized" (the deliberately WRONG, high-contrast way) is simply near=1, far=0
-//   - "use sampled Shroud grays" overrides near/far with the faint measured band
-//     (~0.12 .. 0.28, from the book's exposure floor f_bg=0.12 and contrast c=0.18).
+//               wireframe), for the model INSPECT view.
+//   Cloth plane — OWNS the 2D projection. Two modes (toggle) so you can compare:
+//     FAITHFUL  = tone from DISTANCE to the plane (per-vertex, smoothly
+//                 interpolated → no facets). "An image made of distance."
+//     SHORTCUT  = tone from Phong/Lambert light overhead (surface ANGLE, not
+//                 distance). Smooth & convincing but the documented "lit bust"
+//                 mistake — kept precisely so you can compare the two.
+//   Near/far grays and the sampled faint band apply to both modes.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -54,6 +50,7 @@ const state = {
   near: 1.0,                   // near-plane tone (grayscale)
   far: 0.0,                    // far tone (grayscale) — default = normalized (wrong)
   useSampled: false,           // override near/far with the faint sampled band
+  projMode: "faithful",        // cloth projection: "faithful" (distance) | "shortcut" (phong light)
 };
 
 // ---------------------------------------------------------------- viewports
@@ -108,33 +105,83 @@ function rebuildSceneHelpers() {
   planeSlider.value = String(state.planeY);
 }
 
-// ---------------------------------------------------------------- distance shader
-// Maps world-Y (distance under the plane) into [far, near] grayscale.
-// yMin/yMax = the head's actual Y span (set each frame); planeY = the cloth height.
-const distMat = new THREE.ShaderMaterial({
+// ---------------------------------------------------------------- projection shaders
+// Two ways to turn the model into a grayscale cloth image, toggleable so you can
+// compare them (the whole point: distance vs light).
+//
+// FAITHFUL (distance): tone = distance from the cloth plane to the surface,
+//   computed PER-VERTEX and smoothly interpolated across triangles (so no facets),
+//   then mapped into [far..near]. This is "an image made of distance."
+//
+// SHORTCUT (phong light): tone = Phong/Lambert shading from a light at the cloth
+//   plane shining straight down. Smooth and convincing, but it encodes surface
+//   ANGLE, not distance — the documented "lit bust" mistake. Kept for comparison.
+
+const distMatFaithful = new THREE.ShaderMaterial({
   uniforms: {
-    yMin: { value: 0 }, yMax: { value: 1 },
+    planeY: { value: 1.4 }, yMin: { value: 0 }, yMax: { value: 1 },
     nearTone: { value: 1.0 }, farTone: { value: 0.0 },
   },
   vertexShader: `
-    varying float wY;
+    uniform float planeY, yMin, yMax;
+    varying float vT;
     void main(){
       vec4 wp = modelMatrix * vec4(position, 1.0);
-      wY = wp.y;
+      // t = 0 at the farthest point, 1 at the nearest — per vertex, interpolated smoothly
+      vT = clamp((wp.y - yMin) / max(yMax - yMin, 1e-5), 0.0, 1.0);
       gl_Position = projectionMatrix * viewMatrix * wp;
     }
   `,
   fragmentShader: `
-    uniform float yMin, yMax, nearTone, farTone;
-    varying float wY;
+    uniform float nearTone, farTone;
+    varying float vT;
     void main(){
-      float t = clamp((wY - yMin) / max(yMax - yMin, 1e-5), 0.0, 1.0); // 0 far .. 1 near
-      float g = mix(farTone, nearTone, t);   // t=1 (near plane) -> nearTone
+      float g = mix(farTone, nearTone, vT);   // interpolated distance -> gray
       gl_FragColor = vec4(vec3(g), 1.0);
     }
   `,
   side: THREE.DoubleSide,
 });
+
+const distMatShortcut = new THREE.ShaderMaterial({
+  uniforms: {
+    planeY: { value: 1.4 }, nearTone: { value: 1.0 }, farTone: { value: 0.0 },
+  },
+  vertexShader: `
+    varying vec3 vN;
+    void main(){
+      vN = normalize(mat3(modelMatrix) * normal);   // world-space normal (Phong-interpolated)
+      gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform float nearTone, farTone;
+    varying vec3 vN;
+    void main(){
+      // light straight down from the cloth plane: brightness = up-facing-ness (Lambert)
+      float ndl = clamp(dot(normalize(vN), vec3(0.0, 1.0, 0.0)), 0.0, 1.0);
+      float g = mix(farTone, nearTone, ndl);   // ANGLE-based, not distance (the mistake)
+      gl_FragColor = vec4(vec3(g), 1.0);
+    }
+  `,
+  side: THREE.DoubleSide,
+});
+
+function projMat() { return state.projMode === "shortcut" ? distMatShortcut : distMatFaithful; }
+function syncProjUniforms() {
+  const near = state.useSampled ? SAMPLED_NEAR : state.near;
+  const far  = state.useSampled ? SAMPLED_FAR  : state.far;
+  for (const m of [distMatFaithful, distMatShortcut]) {
+    m.uniforms.nearTone.value = near; m.uniforms.farTone.value = far;
+    m.uniforms.planeY.value = state.planeY;
+  }
+  distMatFaithful.uniforms.yMin.value = projYMin;
+  distMatFaithful.uniforms.yMax.value = projYMax;
+  const nEl = document.getElementById("nearVal"), fEl = document.getElementById("farVal");
+  if (nEl) nEl.value = near.toFixed(2);
+  if (fEl) fEl.value = far.toFixed(2);
+}
+let projYMin = 0, projYMax = 1;
 
 // model display materials by shading type (correctly named)
 //   phong    = smooth normal interpolation (facets hidden) — true Phong shading
@@ -171,7 +218,7 @@ new OBJLoader().load(
 
     frame3dCamera();
     positionTopDownCamera();
-    syncMappingUniforms();
+    syncProjUniforms();
     render();
     setStatus(`Ready · ${geo.getAttribute("position").count.toLocaleString()} verts`);
   },
@@ -227,8 +274,8 @@ function updateProjNormalization() {
   const m = state.mesh3.matrixWorld; const v = new THREE.Vector3();
   let mn=1e9, mx=-1e9;
   for (let i=0;i<headLocal.length;i+=3){ v.set(headLocal[i],headLocal[i+1],headLocal[i+2]).applyMatrix4(m); if(v.y<mn)mn=v.y; if(v.y>mx)mx=v.y; }
-  distMat.uniforms.yMin.value = mn;
-  distMat.uniforms.yMax.value = mx;
+  projYMin = mn; projYMax = mx;
+  syncProjUniforms();
 }
 
 // drag in 2D view: rotate (plain) / move (shift). Move scaled to model size.
@@ -277,26 +324,20 @@ planeSlider.addEventListener("input", () => {
   render();
 });
 
-function syncMappingUniforms() {
-  const near = state.useSampled ? SAMPLED_NEAR : state.near;
-  const far  = state.useSampled ? SAMPLED_FAR  : state.far;
-  distMat.uniforms.nearTone.value = near;
-  distMat.uniforms.farTone.value = far;
-  // reflect into UI if present
-  const nEl = document.getElementById("nearVal"), fEl = document.getElementById("farVal");
-  if (nEl) nEl.value = near.toFixed(2);
-  if (fEl) fEl.value = far.toFixed(2);
-}
-
 // near/far grayscale inputs + sampled toggle (wired if present in the DOM)
 const nearInput = document.getElementById("nearVal");
 const farInput = document.getElementById("farVal");
 const sampledToggle = document.getElementById("useSampled");
 const normalizeBtn = document.getElementById("normalizeBtn");
-if (nearInput) nearInput.addEventListener("input", () => { state.near = clamp01(parseFloat(nearInput.value)); if(!state.useSampled){syncMappingUniforms(); render();} });
-if (farInput) farInput.addEventListener("input", () => { state.far = clamp01(parseFloat(farInput.value)); if(!state.useSampled){syncMappingUniforms(); render();} });
-if (sampledToggle) sampledToggle.addEventListener("change", () => { state.useSampled = sampledToggle.checked; syncMappingUniforms(); render(); });
-if (normalizeBtn) normalizeBtn.addEventListener("click", () => { state.useSampled=false; if(sampledToggle)sampledToggle.checked=false; state.near=1; state.far=0; syncMappingUniforms(); render(); });
+if (nearInput) nearInput.addEventListener("input", () => { state.near = clamp01(parseFloat(nearInput.value)); if(!state.useSampled){syncProjUniforms(); render();} });
+if (farInput) farInput.addEventListener("input", () => { state.far = clamp01(parseFloat(farInput.value)); if(!state.useSampled){syncProjUniforms(); render();} });
+if (sampledToggle) sampledToggle.addEventListener("change", () => { state.useSampled = sampledToggle.checked; syncProjUniforms(); render(); });
+if (normalizeBtn) normalizeBtn.addEventListener("click", () => { state.useSampled=false; if(sampledToggle)sampledToggle.checked=false; state.near=1; state.far=0; syncProjUniforms(); render(); });
+
+// projection mode: faithful (distance) vs shortcut (phong light)
+for (const el of document.querySelectorAll("input[name=projmode]")) {
+  el.addEventListener("change", () => { if (el.checked) { state.projMode = el.value; render(); } });
+}
 function clamp01(x){ return Math.max(0, Math.min(1, isNaN(x)?0:x)); }
 
 // shading radio (3D model layer)
@@ -336,10 +377,20 @@ for (const eye of document.querySelectorAll(".layer .eye[data-toggle]")) {
 
 // ---------------------------------------------------------------- cameras / render
 function frame3dCamera() {
-  const off = Math.max(hw, hd) * 2.2;
-  view3d.camera.position.set(hcx + off, HEAD.y[1] + off * 0.7, hcz + off);
+  if (!state.mesh3) return;
+  // Fit the WHOLE body across the wide bottom strip.
+  const bb = new THREE.Box3().setFromObject(state.mesh3);
+  const size = bb.getSize(new THREE.Vector3());
+  const center = bb.getCenter(new THREE.Vector3());
+  const c = view3d.renderer.domElement;
+  const aspect = (c.clientWidth || 16) / (c.clientHeight || 9);
+  // longest horizontal axis is the body length; view it side-on so it spans the width
+  const bodyLen = Math.max(size.x, size.z);
+  const dist = bodyLen * 0.62 / Math.tan((45 * Math.PI / 180) / 2) / Math.max(aspect, 1) * 1.05;
+  // place camera to the +Y/front so the reclining body reads left-to-right
+  view3d.camera.position.set(center.x, center.y + bodyLen * 0.25, center.z + dist);
   view3d.camera.updateProjectionMatrix();
-  controls3d.target.set(hcx, (HEAD.y[0] + HEAD.y[1]) / 2, hcz);
+  controls3d.target.copy(center);
   controls3d.update();
 }
 function positionTopDownCamera() {
@@ -366,7 +417,7 @@ function render() {
     updateProjNormalization();
     const savedMat = state.mesh3.material;
     const pv = planeMesh.visible, ev = planeEdge.visible, bv = boxHelper.visible;
-    state.mesh3.material = distMat;
+    state.mesh3.material = projMat();
     planeMesh.visible = planeEdge.visible = boxHelper.visible = false;
     view2d.renderer.setClearColor(0x000000, 1);
     view2d.renderer.render(scene, view2d.camera);
