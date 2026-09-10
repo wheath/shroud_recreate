@@ -1,13 +1,16 @@
 // shroud_recreate — MVP web app
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Two horizontal planes: CLOTH (top, forms the image) + CLIPPING (bottom/floor).
+// Two views, two poses:
+//   pose  = AUTHORITATIVE — drives the top 2D view and the projection.
+//   poseB = bottom-only inspection pose, used when NOT linked.
+// Linked (default): bottom mirrors top. Independent: bottom has its own pose you
+// can manipulate (shift-drag in the 3D view) without changing the projection;
+// "make bottom the real pose" copies it up to the authoritative pose.
+//
 // Cloth plane owns the 2D projection: Faithful (distance) vs Shortcut (Phong light).
-// Model shading: phong / flat / bare + mesh-detail picker.
-// Capture frame:
-//   Static  — a fixed window; plain-drag SLIDES the body under it, shift rotates.
-//   Follow  — window tracks the model; plain-drag ROTATES, shift moves.
-// Mouse wheel scales the model in the 2D view.
+// Model shading: phong / flat / bare + mesh-detail picker. Two planes: cloth (top)
+// + clipping (bottom). Capture frame static or move-with-model.
 //
 // LIMITATION: distance is world-Y (assumes a horizontal plane). When the plane can
 // tilt, measure along the plane normal instead.
@@ -48,6 +51,7 @@ const state = {
   projMode: "faithful",
   frameStatic: true,
   clipY: -1,
+  linked: true,                // true = bottom mirrors top (shared pose); false = independent
 };
 
 const MODEL = { size: new THREE.Vector3(1,1,1), center: new THREE.Vector3(0,0,0) };
@@ -283,15 +287,21 @@ function deriveHeadRegion(geo) {
   return { x:[xmin,xmax], y:[ymin,ymax], z:[zmin,zmax] };
 }
 
-// ---------------------------------------------------------------- pose (2D authority)
-const pose = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
-function applyPose() {
+// ---------------------------------------------------------------- poses
+// pose = AUTHORITATIVE (top 2D + projection); poseB = bottom inspection pose.
+const pose  = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
+const poseB = { rx: 0, ry: 0, rz: 0, tx: 0, tz: 0, scale: 1 };
+function bottomPose() { return state.linked ? pose : poseB; }
+
+function applyPoseObj(p) {
   if (!state.mesh3) return;
-  state.mesh3.rotation.set(pose.rx, pose.ry, pose.rz);
-  state.mesh3.position.set(pose.tx, 0, pose.tz);
-  state.mesh3.scale.setScalar(pose.scale);
+  state.mesh3.rotation.set(p.rx, p.ry, p.rz);
+  state.mesh3.position.set(p.tx, 0, p.tz);
+  state.mesh3.scale.setScalar(p.scale);
   state.mesh3.updateMatrixWorld();
-  // capture box: static → fixed at head region; follow → tracks the model's translation
+}
+function applyPose() {
+  applyPoseObj(pose);
   const ox = state.frameStatic ? 0 : pose.tx;
   const oz = state.frameStatic ? 0 : pose.tz;
   projBox.min.set(HEAD.x[0] + ox, HEAD.y[0] - (hw + hd) * 0.05, HEAD.z[0] + oz);
@@ -313,12 +323,12 @@ function updateProjNormalization() {
   syncProjUniforms();
 }
 
-// drag in 2D view — gesture depends on capture-frame mode (see header)
+// drag in 2D view (top) — poses the AUTHORITATIVE model
 let drag = null;
 const el2d = view2d.renderer.domElement;
 el2d.addEventListener("pointerdown", (e) => {
   let mode;
-  if (state.frameStatic) mode = e.shiftKey ? "rotate" : "move";  // static: drag slides body
+  if (state.frameStatic) mode = e.shiftKey ? "rotate" : "move";  // static: drag slides
   else                   mode = e.shiftKey ? "move" : "rotate";  // follow: drag rotates
   drag = { x: e.clientX, y: e.clientY, mode };
   el2d.setPointerCapture(e.pointerId);
@@ -345,6 +355,32 @@ el2d.addEventListener("wheel", (e) => {
   pose.scale = Math.min(8, Math.max(0.15, pose.scale * factor));
   render();
 }, { passive: false });
+
+// ---- bottom 3D view: shift-drag poses the (bottom) model; plain drag orbits ----
+// Shift-drag rotates the bottom model; Shift+Alt-drag moves it. OrbitControls is
+// suspended while shift is held so the gestures don't fight.
+let drag3 = null;
+const el3d = view3d.renderer.domElement;
+el3d.addEventListener("pointerdown", (e) => {
+  if (!e.shiftKey || !state.mesh3) return;      // plain drag → OrbitControls orbits
+  controls3d.enabled = false;
+  drag3 = { x: e.clientX, y: e.clientY, mode: e.altKey ? "move" : "rotate" };
+  el3d.setPointerCapture(e.pointerId);
+});
+el3d.addEventListener("pointermove", (e) => {
+  if (!drag3) return;
+  const p = bottomPose();
+  const dx = e.clientX - drag3.x, dy = e.clientY - drag3.y;
+  drag3.x = e.clientX; drag3.y = e.clientY;
+  if (drag3.mode === "rotate") { p.ry += dx * 0.01; p.rx += dy * 0.01; }
+  else { const s = Math.max(hw, hd) * 0.01; p.tx += dx * s; p.tz += dy * s; }
+  render();
+});
+el3d.addEventListener("pointerup", (e) => {
+  if (!drag3) return;
+  drag3 = null; controls3d.enabled = true;
+  try { el3d.releasePointerCapture(e.pointerId); } catch {}
+});
 
 // ---------------------------------------------------------------- reference image
 const REFERENCE_URL = "../reference/shroud_of_turin_pos_neg_face.jpg";
@@ -381,6 +417,25 @@ for (const el of document.querySelectorAll("input[name=projmode]")) {
 for (const el of document.querySelectorAll("input[name=framemode]")) {
   el.addEventListener("change", () => { if (el.checked) { state.frameStatic = (el.value === "static"); updateDragHint(); render(); } });
 }
+// link / independent toggle
+for (const el of document.querySelectorAll("input[name=linkmode]")) {
+  el.addEventListener("change", () => {
+    if (!el.checked) return;
+    const wasLinked = state.linked;
+    state.linked = (el.value === "linked");
+    if (wasLinked && !state.linked) Object.assign(poseB, pose);  // seed bottom from current pose
+    const btn = document.getElementById("makeRealBtn");
+    if (btn) btn.style.display = state.linked ? "none" : "inline-block";
+    render();
+  });
+}
+// "make bottom the real pose" — copy poseB up to the authoritative pose
+const makeRealBtn = document.getElementById("makeRealBtn");
+if (makeRealBtn) makeRealBtn.addEventListener("click", () => {
+  if (!confirm("Make the bottom view's orientation the real pose? This replaces the top 2D orientation that drives the projection.")) return;
+  Object.assign(pose, poseB);
+  render();
+});
 function updateDragHint() {
   const h = document.getElementById("drag2dHint");
   if (h) h.textContent = state.frameStatic
@@ -485,8 +540,6 @@ function positionTopDownCamera() {
   const aspect = (c.clientWidth || 1) / (c.clientHeight || 1);
   cam.left = -half * aspect; cam.right = half * aspect;
   cam.top = half; cam.bottom = -half;
-  // static: camera fixed on the head-region box (model slides through).
-  // follow: camera tracks the model's translation.
   const ox = state.frameStatic ? 0 : pose.tx;
   const oz = state.frameStatic ? 0 : pose.tz;
   cam.position.set(hcx + ox, HEAD.y[1] + Math.max(hw, hd) * 4, hcz + oz);
@@ -497,11 +550,12 @@ function positionTopDownCamera() {
 positionTopDownCamera();
 
 function render() {
+  if (!state.mesh3) return;
+
+  // --- TOP 2D + projection: authoritative pose ---
   applyPose();
   positionTopDownCamera();
-  view3d.renderer.render(scene, view3d.camera);
-
-  const showProjection = state.clothOn && state.activeView === "cloth" && state.mesh3;
+  const showProjection = state.clothOn && state.activeView === "cloth";
   const helpers = [planeMesh, planeEdge, clipMesh, clipEdge, boxHelper];
   const vis = helpers.map(h => h.visible);
   helpers.forEach(h => h.visible = false);
@@ -517,9 +571,20 @@ function render() {
     view2d.renderer.render(scene, view2d.camera);
   }
   helpers.forEach((h, i) => h.visible = vis[i]);
+
+  // --- BOTTOM 3D inspect view: bottom pose (independent when unlinked) ---
+  applyPoseObj(bottomPose());
+  view3d.renderer.render(scene, view3d.camera);
+  applyPoseObj(pose);   // leave mesh on authoritative pose for next frame's projection
 }
 
-function animate() { requestAnimationFrame(animate); controls3d.update(); view3d.renderer.render(scene, view3d.camera); }
+function animate() {
+  requestAnimationFrame(animate);
+  controls3d.update();
+  if (state.mesh3) applyPoseObj(bottomPose());
+  view3d.renderer.render(scene, view3d.camera);
+  if (state.mesh3) applyPoseObj(pose);   // restore authoritative for projection reads
+}
 animate();
 
 function setStatus(msg, isError=false){ const el=document.getElementById("status"); el.textContent=msg; el.style.color=isError?"#e0736f":"#8a8f99"; }
