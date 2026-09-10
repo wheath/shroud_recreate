@@ -93,7 +93,7 @@
   <header>
     <h1>shroud_recreate</h1>
     <span class="tag">projection workbench · MVP</span>
-    <span class="tag" id="version" style="color:var(--accent);border-color:var(--accent);">v0.1.2</span>
+    <span class="tag" id="version" style="color:var(--accent);border-color:var(--accent);">v0.1.3</span>
     <span id="status">Starting…</span>
   </header>
 
@@ -119,8 +119,9 @@
           <label style="cursor:pointer;"><input type="radio" name="linkmode" value="linked" checked style="vertical-align:middle;" /> linked</label>
           <label style="cursor:pointer;"><input type="radio" name="linkmode" value="independent" style="vertical-align:middle;" /> independent</label>
           <button class="btn" id="makeRealBtn" style="display:none;">make bottom the real pose</button>
+          <button class="btn" id="gizmoModeBtn">gizmo: move</button>
           <button class="btn" id="resetModelBtn">reset model position</button>
-          <span id="hint3d">· orbit · G move · R rotate (mirrors top)</span>
+          <span id="hint3d">· drag gizmo · W/E mode · G/R + X/Y/Z keys</span>
         </span>
       </div>
       <div class="stage"><canvas id="view3d" class="gl"></canvas></div>
