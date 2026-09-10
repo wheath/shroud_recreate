@@ -1,10 +1,14 @@
-// shroud_recreate — MVP web app  ·  v0.1.5
+// shroud_recreate — MVP web app  ·  v0.1.6
 // Serverless: pure static files + Three.js from CDN. No backend.
 //
-// Bottom 3D view: gizmo (dropdown: move/rotate/scale, or W/E/S) + Blender keys
-// (G/R then X/Y/Z to lock an axis). Pivot: presets (center/head/feet/origin) via
-// dropdown, or "pick point…" to click a spot on the model. The mesh lives inside a
-// PIVOT GROUP; changing the pivot preserves the mesh world transform (no jump).
+// Bottom 3D view:
+//   KEYBOARD (Blender): G move / R rotate / S scale; then X/Y/Z lock an axis;
+//     hold Shift = fine/precision (~6x); click confirms, Esc cancels.
+//   GIZMO (Unity): dropdown move/rotate/scale; drag arrows/rings/boxes; hold
+//     Shift = snap to increments (5deg / 0.1 scale / small steps).
+//   plain-drag (no handle) = orbit camera.
+// Pivot: presets (center/head/feet/origin) or "pick point…" (click the model).
+// Changing the pivot preserves the mesh world transform (no jump).
 //
 // Two poses: pose = AUTHORITATIVE (top 2D + projection); poseB = bottom pose
 // (independent). Capture box static (fixed) or move-with-model (rides pose).
@@ -18,7 +22,7 @@ import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
-const APP_VERSION = "v0.1.5";
+const APP_VERSION = "v0.1.6";
 console.log("shroud_recreate " + APP_VERSION);
 { const vEl = document.getElementById("version"); if (vEl) vEl.textContent = APP_VERSION; }
 
@@ -344,8 +348,6 @@ function syncPoseFromMesh() {
 }
 
 // Set the pivot to a LOCAL point on the mesh WITHOUT moving the model.
-// Force the mesh's world matrix to be identical before and after; only the group
-// origin (the pivot) relocates.
 function setPivotLocal(localPt) {
   if (!state.mesh3) return;
   state.mesh3.updateMatrixWorld(true);
@@ -432,12 +434,12 @@ el2d.addEventListener("wheel", (e) => {
   render();
 }, { passive: false });
 
-// ---- bottom 3D view: gizmo (mouse) + G/R keyboard with X/Y/Z axis lock ----
+// ---- bottom 3D view: keyboard G/R/S (Shift=fine) + gizmo (Shift=snap) ----
 let xform = null;
 const el3d = view3d.renderer.domElement;
 
-function snapshotPose(p) { return { rx:p.rx, ry:p.ry, rz:p.rz, tx:p.tx, ty:p.ty, tz:p.tz, scale:p.scale }; }
-function restorePose(p, s) { p.rx=s.rx; p.ry=s.ry; p.rz=s.rz; p.tx=s.tx; p.ty=s.ty; p.tz=s.tz; p.scale=s.scale; }
+function snapshotPose(p) { return { rx:p.rx, ry:p.ry, rz:p.rz, tx:p.tx, ty:p.ty, tz:p.tz, scale:p.scale, sx:p.sx, sy:p.sy, sz:p.sz }; }
+function restorePose(p, s) { p.rx=s.rx; p.ry=s.ry; p.rz=s.rz; p.tx=s.tx; p.ty=s.ty; p.tz=s.tz; p.scale=s.scale; p.sx=s.sx; p.sy=s.sy; p.sz=s.sz; }
 
 function startXform(mode) {
   if (!state.mesh3) return;
@@ -448,7 +450,8 @@ function startXform(mode) {
 function updateXformStatus() {
   if (!xform) return;
   const a = xform.axis ? ` [${xform.axis.toUpperCase()}]` : "";
-  setStatus(`${xform.mode === "move" ? "Grab" : "Rotate"}${a}: move mouse · X/Y/Z axis · click place · Esc cancel`);
+  const verb = xform.mode === "move" ? "Grab" : xform.mode === "scale" ? "Scale" : "Rotate";
+  setStatus(`${verb}${a}: move mouse · X/Y/Z axis · Shift = fine · click place · Esc cancel`);
 }
 function endXform(cancel) {
   if (!xform) return;
@@ -459,7 +462,7 @@ function endXform(cancel) {
   render();
 }
 
-// gizmo mode: dropdown (move/rotate/scale) + W/E/S keys
+// gizmo mode: dropdown (move/rotate/scale)
 function setGizmoMode(mode) {
   const m = mode === "rotate" ? "rotate" : mode === "scale" ? "scale" : "translate";
   gizmo.setMode(m);
@@ -469,6 +472,16 @@ function setGizmoMode(mode) {
 const gizmoModeSel = document.getElementById("gizmoModeSel");
 if (gizmoModeSel) gizmoModeSel.addEventListener("change", () => setGizmoMode(gizmoModeSel.value));
 
+// Gizmo fine-control: hold Shift to SNAP to increments while dragging a handle.
+function setGizmoSnap(on) {
+  const snapMove = Math.max(hw, hd) * 0.02;
+  gizmo.setTranslationSnap(on ? snapMove : null);
+  gizmo.setRotationSnap(on ? THREE.MathUtils.degToRad(5) : null);
+  gizmo.setScaleSnap(on ? 0.1 : null);
+}
+addEventListener("keydown", (e) => { if (e.key === "Shift") setGizmoSnap(true); });
+addEventListener("keyup",   (e) => { if (e.key === "Shift") setGizmoSnap(false); });
+
 addEventListener("keydown", (e) => {
   const tag = (e.target && e.target.tagName) || "";
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
@@ -476,9 +489,7 @@ addEventListener("keydown", (e) => {
   if (e.repeat && !"xyz".includes(k)) return;
   if (k === "g") { startXform("move"); }
   else if (k === "r") { startXform("rotate"); }
-  else if (k === "w") { setGizmoMode("move"); }
-  else if (k === "e") { setGizmoMode("rotate"); }
-  else if (k === "s") { setGizmoMode("scale"); }
+  else if (k === "s") { startXform("scale"); }
   else if (k === "escape") { endXform(true); if (pickingPivot) { pickingPivot = false; setStatus(`Ready · ${APP_VERSION}`); } }
   else if (xform && (k === "x" || k === "y" || k === "z")) {
     xform.axis = (xform.axis === k) ? null : k;
@@ -488,8 +499,10 @@ addEventListener("keydown", (e) => {
 el3d.addEventListener("pointermove", (e) => {
   if (!xform) return;
   if (xform.lastX == null) { xform.lastX = e.clientX; xform.lastY = e.clientY; return; }
-  const dx = e.clientX - xform.lastX, dy = e.clientY - xform.lastY;
+  let dx = e.clientX - xform.lastX, dy = e.clientY - xform.lastY;
   xform.lastX = e.clientX; xform.lastY = e.clientY;
+  const fine = e.shiftKey ? 0.15 : 1;   // Shift = precision (~6x finer)
+  dx *= fine; dy *= fine;
   const p = bottomPose();
   const d = (dx - dy) * 0.5;
   if (xform.mode === "rotate") {
@@ -497,6 +510,12 @@ el3d.addEventListener("pointermove", (e) => {
     else if (xform.axis === "y") p.ry += d * 0.01;
     else if (xform.axis === "z") p.rz += d * 0.01;
     else { p.ry += dx * 0.01; p.rx += dy * 0.01; }
+  } else if (xform.mode === "scale") {
+    const f = Math.exp(d * 0.01);
+    if (xform.axis === "x") p.sx = (p.sx||1) * f;
+    else if (xform.axis === "y") p.sy = (p.sy||1) * f;
+    else if (xform.axis === "z") p.sz = (p.sz||1) * f;
+    else { const u = (p.scale||1) * f; p.scale = u; p.sx = p.sy = p.sz = u; }
   } else {
     const s = Math.max(hw, hd) * 0.01;
     if (xform.axis === "x") p.tx += d * s;
@@ -600,7 +619,7 @@ for (const el of document.querySelectorAll("input[name=linkmode]")) {
     const btn = document.getElementById("makeRealBtn");
     if (btn) btn.style.display = state.linked ? "none" : "inline-block";
     const h3 = document.getElementById("hint3d");
-    if (h3) h3.textContent = state.linked ? "· gizmo W/E/S · G/R/S+X/Y/Z (mirrors top)" : "· gizmo W/E/S · G/R/S + X/Y/Z keys";
+    if (h3) h3.textContent = state.linked ? "· G/R/S (Shift=fine) · gizmo drag (Shift=snap) · mirrors top" : "· G/R/S keys (Shift=fine) · gizmo drag (Shift=snap)";
     render();
   });
 }
