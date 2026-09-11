@@ -34,3 +34,8 @@ venv/
 # The Moraes Shroud 3D model + our decimated derivatives are CC BY 4.0 and ARE
 # committed, with attribution in third_party/moraes/NOTICE.md.
 !third_party/moraes/**
+
+# ---- Public-domain reference image (tracked despite the *.jpg rule above) ----
+# The default reference is a public-domain Shroud photograph (Secondo Pia, 1898 /
+# PD-Art). Committed with provenance in reference/NOTICE.md.
+!reference/**

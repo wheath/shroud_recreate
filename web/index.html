@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>shroud_recreate — projection workbench</title>
+<style>
+  :root {
+    --bg:#101216; --panel:#181b21; --line:#2a2f3a; --ink:#d7dae0;
+    --ink-dim:#8a8f99; --accent:#3d7bd4; --warn:#d8a24a;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font:14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display:grid; grid-template-rows:auto 1fr; height:100vh; }
+  header { display:flex; align-items:center; gap:16px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:14px; font-weight:600; margin:0; }
+  header .tag { font-size:11px; color:var(--ink-dim); border:1px solid var(--line);
+    padding:2px 8px; border-radius:999px; }
+  header #status { margin-left:auto; font-size:12px; color:var(--ink-dim); }
+
+  main {
+    display:grid; grid-template-columns:1fr 1fr 330px; grid-template-rows:1fr 300px;
+    grid-template-areas:"reference twod dock" "threed threed dock";
+    gap:1px; background:var(--line); min-height:0;
+  }
+  .pane { background:var(--bg); display:flex; flex-direction:column; min-height:0; min-width:0; }
+  .pane > .cap { font-size:11px; color:var(--ink-dim); padding:7px 11px;
+    border-bottom:1px solid var(--line); background:var(--panel);
+    display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .cap .hint { color:#666c78; }
+  .stage { flex:1; position:relative; min-height:0; display:flex; align-items:center;
+    justify-content:center; overflow:hidden; }
+  canvas.gl { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #paneReference { grid-area:reference; } #paneTwoD { grid-area:twod; }
+  #paneThreeD { grid-area:threed; } #dock { grid-area:dock; }
+  #refImg { max-width:100%; max-height:100%; width:auto; height:auto; display:none; }
+  #refEmpty { color:var(--ink-dim); font-size:12px; text-align:center; padding:16px; line-height:1.5; }
+
+  .dock { background:var(--panel); overflow-y:auto; display:flex; flex-direction:column; }
+  .dock .cap { position:sticky; top:0; z-index:1; }
+  .group { padding:12px 12px 14px; border-bottom:1px solid var(--line); position:relative; }
+  .group h2 { font-size:11px; font-weight:600; color:var(--ink-dim); margin:0 0 10px; letter-spacing:.02em;
+    display:flex; align-items:center; gap:8px; }
+  .group.active-section { background:#141a24; box-shadow:inset 3px 0 0 var(--accent); }
+  .group.section-disabled { opacity:.4; }
+  .group.section-disabled input, .group.section-disabled button, .group.section-disabled select { pointer-events:none; }
+  .group .disabled-pill { display:none; font-size:9px; color:var(--warn); border:1px solid #4a3d22;
+    background:#24200f; padding:1px 6px; border-radius:999px; font-weight:500; letter-spacing:0; }
+  .group.section-disabled .disabled-pill { display:inline-block; }
+  @keyframes sectionflash { 0%{background:#1c2740;} 100%{background:transparent;} }
+  .group.flash { animation:sectionflash 0.6s ease-out; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:8px 0; }
+  .row label { font-size:12px; color:var(--ink); }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  input[type=number] { width:64px; background:#0e1014; color:var(--ink); border:1px solid var(--line);
+    border-radius:4px; padding:3px 6px; font-size:12px; }
+  .radios { display:flex; flex-direction:column; gap:6px; }
+  .radio { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--ink); cursor:pointer; }
+  .radio input { accent-color:var(--accent); }
+  .radio small { color:var(--ink-dim); }
+  .helpline { font-size:11px; color:var(--ink-dim); margin:4px 0 0; }
+  .chk { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--ink); cursor:pointer; }
+  .btn { font-size:11px; color:var(--ink-dim); border:1px solid var(--line); background:transparent;
+    border-radius:5px; padding:4px 8px; cursor:pointer; }
+  .btn:hover { color:var(--ink); border-color:var(--ink-dim); }
+
+  .spacer { flex:1; }
+  .layers { border-top:1px solid var(--line); }
+  .layers .cap { font-size:11px; color:var(--ink-dim); padding:7px 11px; background:var(--panel);
+    display:flex; justify-content:space-between; }
+  .layer { display:flex; align-items:center; gap:8px; padding:7px 11px; font-size:12px;
+    border-bottom:1px solid var(--line); }
+  .layer[data-view] { cursor:pointer; }
+  .layer[data-view]:hover { background:#1e222a; }
+  .layer.active { background:#1b2b45; box-shadow:inset 2px 0 0 var(--accent); }
+  .layer .eye { width:16px; text-align:center; color:var(--ink-dim); }
+  .layer .eye[data-toggle] { cursor:pointer; }
+  .layer .eye.off { color:#555; }
+  .layer.active .eye { color:var(--accent); }
+  .layer .nm { flex:1; }
+  .layer.disabled { opacity:.5; }
+  .layer.soon .tag2 { font-size:9px; color:var(--warn); border:1px solid #4a3d22;
+    background:#24200f; padding:1px 5px; border-radius:999px; }
+
+  footer { grid-column:1 / -1; }
+  .credit { font-size:10px; color:#5b616c; padding:6px 12px; border-top:1px solid var(--line); background:var(--panel); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>shroud_recreate</h1>
+    <span class="tag">projection workbench · MVP</span>
+    <span class="tag" id="version" style="color:var(--accent);border-color:var(--accent);">v0.1.6</span>
+    <span id="status">Starting…</span>
+  </header>
+
+  <main>
+    <section class="pane" id="paneReference">
+      <div class="cap"><span>Reference</span><span class="hint">click to load your own</span></div>
+      <div class="stage" id="refWrap" style="cursor:pointer;background:#000;">
+        <img id="refImg" alt="reference Shroud image" />
+        <div id="refEmpty">loading reference&hellip;</div>
+      </div>
+      <input type="file" id="refFile" accept="image/*" style="display:none;" />
+    </section>
+
+    <section class="pane" id="paneTwoD">
+      <div class="cap"><span>2D · <span id="activeLabel">Cloth · distance projection</span></span><span class="hint" id="drag2dHint">drag move · shift rotate · scroll zoom</span></div>
+      <div class="stage"><canvas id="view2d" class="gl"></canvas></div>
+    </section>
+
+    <section class="pane" id="paneThreeD">
+      <div class="cap">
+        <span>3D view · inspect</span>
+        <span class="hint" style="display:flex;align-items:center;gap:10px;">
+          <label style="cursor:pointer;"><input type="radio" name="linkmode" value="linked" checked style="vertical-align:middle;" /> linked</label>
+          <label style="cursor:pointer;"><input type="radio" name="linkmode" value="independent" style="vertical-align:middle;" /> independent</label>
+          <button class="btn" id="makeRealBtn" style="display:none;">make bottom the real pose</button>
+          <label style="display:inline-flex;align-items:center;gap:4px;">gizmo
+            <select id="gizmoModeSel" style="background:#0e1014;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:2px 4px;font-size:11px;">
+              <option value="translate" selected>move</option>
+              <option value="rotate">rotate</option>
+              <option value="scale">scale</option>
+            </select>
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;">pivot
+            <select id="pivotSel" style="background:#0e1014;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:2px 4px;font-size:11px;">
+              <option value="center" selected>center</option>
+              <option value="head">head</option>
+              <option value="feet">feet</option>
+              <option value="origin">origin</option>
+              <option value="manual">pick point…</option>
+            </select>
+          </label>
+          <button class="btn" id="resetModelBtn">reset model position</button>
+          <span id="hint3d">· G/R/S keys (Shift=fine) · gizmo drag (Shift=snap)</span>
+        </span>
+      </div>
+      <div class="stage"><canvas id="view3d" class="gl"></canvas></div>
+    </section>
+
+    <aside class="pane dock" id="dock">
+      <div class="cap"><span>Controls</span></div>
+
+      <div class="group" data-section="model">
+        <h2>3D model · shading <span class="disabled-pill">disabled</span></h2>
+        <div class="radios">
+          <label class="radio"><input type="radio" name="shading" value="phong" checked /> <span>Phong shading <small>(smooth)</small></span></label>
+          <label class="radio"><input type="radio" name="shading" value="flat" /> <span>Flat shading <small>(faceted)</small></span></label>
+          <label class="radio"><input type="radio" name="shading" value="bare" /> <span>Bare polygons <small>(wireframe)</small></span></label>
+        </div>
+        <div class="row" style="margin-top:12px;"><label for="meshRes">Mesh detail</label>
+          <select id="meshRes" style="background:#0e1014;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font-size:12px;">
+            <option value="1000">1k (coarse)</option>
+            <option value="2000">2k</option>
+            <option value="5000">5k</option>
+            <option value="10000" selected>10k (smooth)</option>
+            <option value="full">full (~1.8MB)</option>
+          </select>
+        </div>
+        <p class="helpline">Smoothness comes from mesh detail, not the shading model. Higher detail = smoother Phong, larger download.</p>
+      </div>
+
+      <div class="group" data-section="cloth">
+        <h2>Cloth plane <span class="disabled-pill">disabled</span></h2>
+        <div class="row"><label for="planeHeight">Height</label></div>
+        <input id="planeHeight" type="range" min="0.2" max="2.5" step="0.01" value="1.4" />
+        <div style="margin-top:12px;" class="radios">
+          <label class="radio"><input type="radio" name="projmode" value="faithful" checked /> <span>Faithful <small>(distance)</small></span></label>
+          <label class="radio"><input type="radio" name="projmode" value="shortcut" /> <span>Shading shortcut <small>(Phong light &mdash; the &ldquo;lit bust&rdquo;)</small></span></label>
+        </div>
+        <div style="margin-top:12px;" class="radios">
+          <div style="font-size:10px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.04em;">Capture frame</div>
+          <label class="radio"><input type="radio" name="framemode" value="static" checked /> <span>Static <small>(fixed; model moves relative to it)</small></span></label>
+          <label class="radio"><input type="radio" name="framemode" value="follow" /> <span>Move with model <small>(box rides the model)</small></span></label>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <label>Near tone</label><input type="number" id="nearVal" min="0" max="1" step="0.01" value="1.00" />
+        </div>
+        <div class="row">
+          <label>Far tone</label><input type="number" id="farVal" min="0" max="1" step="0.01" value="0.00" />
+        </div>
+        <label class="chk" style="margin-top:8px;"><input type="checkbox" id="useSampled" /> Use sampled Shroud grays (faint band)</label>
+        <div style="margin-top:8px;"><button class="btn" id="normalizeBtn">Reset to normalized (0&ndash;1)</button></div>
+        <p class="helpline">Gray from distance (faithful) or from surface angle to an overhead light (shortcut). Both smooth. Mapped into [far &hellip; near]; normalized 0&ndash;1 is the deliberately <em>wrong</em>, high-contrast way.</p>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="layers">
+        <div class="cap"><span>Layers</span><span class="hint">click row = show in 2D · click &#9673; = enable</span></div>
+        <div class="layer soon disabled"><span class="eye">&#9678;</span><span class="nm">Sepia colour <span class="tag2">soon</span></span></div>
+        <div class="layer soon disabled"><span class="eye">&#9678;</span><span class="nm">Transparency <span class="tag2">soon</span></span></div>
+        <div class="layer soon disabled"><span class="eye">&#9678;</span><span class="nm">Weave <span class="tag2">soon</span></span></div>
+        <div class="layer soon disabled"><span class="eye">&#9678;</span><span class="nm">Scattering / haze <span class="tag2">soon</span></span></div>
+        <div class="layer soon disabled"><span class="eye">&#9678;</span><span class="nm">Blur <span class="tag2">soon</span></span></div>
+        <div class="layer soon disabled"><span class="eye">&#9678;</span><span class="nm">Blood mask <span class="tag2">soon</span></span></div>
+        <div class="layer active" data-view="cloth"><span class="eye" data-toggle="cloth">&#9673;</span><span class="nm">Cloth plane <span class="tag2" style="border-color:#2a3a4a;background:#16202c;color:#7fa8c8;">projection</span></span></div>
+        <div class="layer" data-view="model"><span class="eye">&#9673;</span><span class="nm">3D model</span></div>
+      </div>
+    </aside>
+
+    <footer>
+      <div class="credit">
+        3D model: &ldquo;Data &ndash; 3D files &ndash; Shroud of Turin&rdquo; by C&iacute;cero Moraes, CC BY 4.0
+        (<a href="https://creativecommons.org/licenses/by/4.0/">license</a>). Reference image: public domain
+        (Secondo Pia, 1898). Runs entirely in your browser &mdash; no data leaves your device.
+      </div>
+    </footer>
+  </main>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
